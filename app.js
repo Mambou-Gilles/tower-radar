@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 1: static radar with mock towers =====
+// ===== Tower Radar — Phase 3: GPS + mock towers =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -161,7 +161,9 @@ function draw() {
     if (!nearest || t.dist < nearest.dist) nearest = t;
     if (t.dist > range) continue;
 
-    const r = (t.dist / range) * R;
+    // Keep the whole blip inside the circle
+    const plotR = R - W / 30;
+    const r = (t.dist / range) * plotR;
     const a = toRad(t.bearing);
     const x = c + r * Math.sin(a);
     const y = c - r * Math.cos(a);
@@ -176,7 +178,7 @@ function draw() {
   // Arrow to nearest tower
   if (nearest) {
     const a = toRad(nearest.bearing);
-    const len = Math.min((nearest.dist / range) * R, R);
+    const len = Math.min((nearest.dist / range) * (R - W / 30), R - W / 30);
     ctx.strokeStyle = "#ffffff";
     ctx.lineWidth = W / 150;
     ctx.beginPath();
