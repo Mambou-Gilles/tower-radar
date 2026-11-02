@@ -9,18 +9,62 @@ const NETWORKS = {
   cellc:   { name: "Cell C",  color: "#ffffff" },
 };
 
-// --- Fake user location (central Johannesburg) until GPS is added in Phase 3 ---
-const user = { lat: -26.2041, lon: 28.0473 };
+// --- User location: starts at central Johannesburg, replaced by GPS once available ---
+const user = { lat: -26.2041, lon: 28.0473, accuracy: null };
 
-// --- Mock towers placed around the user ---
-const towers = [
-  { network: "rain",    lat: -26.1985, lon: 28.0521 },
-  { network: "rain",    lat: -26.2132, lon: 28.0398 },
-  { network: "vodacom", lat: -26.2060, lon: 28.0610 },
-  { network: "mtn",     lat: -26.1950, lon: 28.0420 },
-  { network: "telkom",  lat: -26.2180, lon: 28.0560 },
-  { network: "cellc",   lat: -26.2005, lon: 28.0330 },
+// --- Mock towers, defined as offsets (in degrees) from the user ---
+// ~0.001° latitude ≈ 111 m
+const MOCK_OFFSETS = [
+  { network: "rain",    dLat:  0.0056, dLon:  0.0048 },
+  { network: "rain",    dLat: -0.0091, dLon: -0.0075 },
+  { network: "vodacom", dLat: -0.0019, dLon:  0.0137 },
+  { network: "mtn",     dLat:  0.0091, dLon: -0.0053 },
+  { network: "telkom",  dLat: -0.0139, dLon:  0.0087 },
+  { network: "cellc",   dLat:  0.0036, dLon: -0.0143 },
 ];
+
+let towers = [];
+
+function buildMockTowers() {
+  towers = MOCK_OFFSETS.map((o) => ({
+    network: o.network,
+    lat: user.lat + o.dLat,
+    lon: user.lon + o.dLon,
+  }));
+}
+buildMockTowers();
+
+// ===== GPS =====
+const statusEl = document.getElementById("status");
+let hasFix = false;
+
+function startGPS() {
+  if (!("geolocation" in navigator)) {
+    statusEl.textContent = "NO GPS · MOCK";
+    return;
+  }
+  statusEl.textContent = "FINDING GPS…";
+
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      user.lat = pos.coords.latitude;
+      user.lon = pos.coords.longitude;
+      user.accuracy = pos.coords.accuracy;
+
+      // First fix: move the mock towers around the real location
+      if (!hasFix) {
+        hasFix = true;
+        buildMockTowers();
+      }
+      statusEl.textContent = `GPS ±${Math.round(user.accuracy)} m · MOCK`;
+    },
+    (err) => {
+      statusEl.textContent =
+        err.code === err.PERMISSION_DENIED ? "GPS DENIED · MOCK" : "GPS ERROR · MOCK";
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+  );
+}
 
 // --- Radar ranges in metres ---
 const RANGES = [500, 1500, 3000, 5000];
@@ -146,6 +190,13 @@ function draw() {
       `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;
   }
 
+  // GPS accuracy circle
+  if (user.accuracy) {
+    const ar = Math.min((user.accuracy / range) * R, R);
+    ctx.fillStyle = "rgba(57,255,106,0.12)";
+    ctx.beginPath(); ctx.arc(c, c, ar, 0, Math.PI * 2); ctx.fill();
+  }
+
   // User dot
   ctx.fillStyle = "#39ff6a";
   ctx.beginPath(); ctx.arc(c, c, W / 50, 0, Math.PI * 2); ctx.fill();
@@ -167,4 +218,5 @@ document.getElementById("zoomOut").onclick = () => {
 };
 
 updateRangeLabel();
+startGPS();
 draw();
