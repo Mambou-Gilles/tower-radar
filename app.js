@@ -2,7 +2,7 @@
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
-  rain:    { name: "Rain",    color: "#ff3cf0", mnc: [38, 19] },
+  rain:    { name: "Rain",    color: "#ff3cf0", mnc: [73, 38, 19] },   // 73 = Rain 5G (router PLMN 65573)
   vodacom: { name: "Vodacom", color: "#ff3b3b", mnc: [1] },
   mtn:     { name: "MTN",     color: "#ffd400", mnc: [10] },
   telkom:  { name: "Telkom",  color: "#3ba0ff", mnc: [2] },
@@ -112,17 +112,17 @@ function toSites(cells, network) {
 }
 
 function findCached(network, lat, lon, grid) {
-  const list = store.get(`cells:${network}`, []);
+  const list = store.get(`cells2:${network}`, []);
   const maxAge = CACHE_DAYS * 86400000;
   return list.find((e) => (e.grid || 1) === grid && Date.now() - e.time < maxAge &&
                           distance(lat, lon, e.lat, e.lon) < RELOAD_AFTER_M);
 }
 
 function saveCache(network, lat, lon, grid, sites) {
-  const list = store.get(`cells:${network}`, []).filter((e) =>
+  const list = store.get(`cells2:${network}`, []).filter((e) =>
     (e.grid || 1) !== grid || distance(lat, lon, e.lat, e.lon) >= RELOAD_AFTER_M);
   list.unshift({ lat, lon, grid, time: Date.now(), sites });
-  store.set(`cells:${network}`, list.slice(0, 12));
+  store.set(`cells2:${network}`, list.slice(0, 12));
 }
 
 // Centres of an n×n grid of 2 km boxes around (lat, lon), nearest first
@@ -325,7 +325,7 @@ document.getElementById("saveSettings").onclick = async () => {
 };
 
 document.getElementById("clearCache").onclick = () => {
-  Object.keys(NETWORKS).forEach((n) => store.del(`cells:${n}`));
+  Object.keys(NETWORKS).forEach((n) => { store.del(`cells:${n}`); store.del(`cells2:${n}`); });
   loadedAt = null;
   settingsMsg.textContent = "Saved tower data cleared. Next scan uses fresh data.";
 };
