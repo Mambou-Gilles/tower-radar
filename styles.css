@@ -154,3 +154,12 @@ main {
 .compare .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .compare .best { color: var(--green); font-weight: bold; text-shadow: 0 0 8px var(--green); }
 .compare .none { color: #4d7a57; }
+
+#radar { cursor: pointer; touch-action: manipulation; }
+.hint { color: var(--green-dim); font-size: 11px; letter-spacing: 1px; margin-top: -8px; }
+.tp-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 13px; }
+.tp-grid dt { color: #7fbf8f; }
+.tp-grid dd { color: var(--text); word-break: break-word; }
+.tp-address { border: 1px solid var(--green-dim); border-radius: 8px; padding: 10px 12px; }
+.tp-address div { margin-top: 4px; font-size: 15px; color: var(--green); }
+#unlockBtn { margin-top: 8px; color: #ffcc00; }

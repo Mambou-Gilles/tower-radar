@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="stylesheet" href="styles.css?v=10" />
 </head>
 <body>
   <header class="hud">
@@ -14,7 +14,8 @@
   </header>
 
   <main>
-    <canvas id="radar"></canvas>
+    <canvas id="radar" aria-label="Radar — tap a tower for details"></canvas>
+    <small class="hint">Tap any tower dot for details</small>
     <button id="compassBtn" class="compass-btn" hidden>ENABLE COMPASS</button>
 
     <section class="target">
@@ -41,6 +42,7 @@
       <div id="targetDist" class="dist">—</div>
       <div id="targetBearing" class="bearing">—</div>
       <div id="aim" class="aim"></div>
+      <button id="unlockBtn" class="link" hidden>🔒 Locked on this tower — tap to unlock</button>
       <div id="dataMsg" class="data-msg"></div>
     </section>
 
@@ -97,6 +99,24 @@
     </div>
   </div>
 
+  <div id="towerPanel" class="overlay" hidden>
+    <div class="panel">
+      <h2 id="tpTitle">TOWER</h2>
+      <dl id="tpGrid" class="tp-grid"></dl>
+      <div class="tp-address">
+        <small>NEAREST ADDRESS (APPROX.)</small>
+        <div id="tpAddress">Looking up…</div>
+      </div>
+      <div id="tpAdvice" class="sig-summary"></div>
+      <small>Position is estimated from phone reports and can be off by a few hundred metres.</small>
+      <div class="panel-buttons">
+        <button id="tpAim" class="primary">AIM AT THIS TOWER</button>
+        <button id="tpClose">CLOSE</button>
+      </div>
+      <a id="tpMap" class="link" target="_blank" rel="noopener">Open in Google Maps ↗</a>
+    </div>
+  </div>
+
   <div id="comparePanel" class="overlay" hidden>
     <div class="panel">
       <h2>COMPARE NETWORKS</h2>
@@ -144,6 +164,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

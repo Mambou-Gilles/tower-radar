@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 6b: per-network targets, type filter, compare =====
+// ===== Tower Radar — Phase 7: tap a tower for details, lock target =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -343,12 +343,14 @@ radioModeEl.value = settings.radio;
 radioModeEl.onchange = () => {
   settings.radio = radioModeEl.value;
   store.set("settings", settings);
+  setLock(null);
   if (settings.apiKey) loadTowers().then(autoZoom); else autoZoom();
 };
 
 targetModeEl.value = settings.target;
 targetModeEl.onchange = () => {
   settings.target = targetModeEl.value;
+  setLock(null);
   if (NETWORKS[settings.target] && !settings.networks.includes(settings.target)) settings.networks.push(settings.target);
   store.set("settings", settings);
   if (settings.target === "signal") return;
@@ -537,6 +539,120 @@ document.getElementById("compareRescan").onclick = async () => {
   await loadTowers();
   renderCompare();
 };
+
+
+// ===== Tap a tower: details panel + lock =====
+let hits = [];                 // screen positions of drawn blips, rebuilt every frame
+let lockedSite = null;         // a tower the user chose to aim at
+const towerPanel = document.getElementById("towerPanel");
+const unlockBtn = document.getElementById("unlockBtn");
+let panelSite = null, addrToken = 0;
+
+const POINT_WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
+const addrCache = store.get("addrCache", {});
+
+async function lookupAddress(lat, lon) {
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  if (addrCache[key]) return addrCache[key];
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=en&lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}`;
+  const res = await fetch(url);
+  const d = await res.json();
+  const a = d.address || {};
+  const street = [a.house_number, a.road].filter(Boolean).join(" ");
+  const parts = [street, a.suburb || a.neighbourhood || a.quarter, a.city || a.town || a.village].filter(Boolean);
+  const text = parts.join(", ") || d.display_name || "No address found";
+  addrCache[key] = text;
+  const keys = Object.keys(addrCache);
+  if (keys.length > 60) delete addrCache[keys[0]];
+  store.set("addrCache", addrCache);
+  return text;
+}
+
+function siteId(t) { return t.isRouter ? "router" : t.siteKey || `${t.network}-${t.lat},${t.lon}`; }
+
+function openTower(t) {
+  panelSite = t;
+  const dist = distance(user.lat, user.lon, t.lat, t.lon);
+  const brg = bearing(user.lat, user.lon, t.lat, t.lon);
+  const cp = compassPoint(brg);
+  const net = NETWORKS[t.network];
+
+  document.getElementById("tpTitle").textContent = t.isRouter ? "YOUR ROUTER'S CELL" : `${net.name.toUpperCase()} TOWER`;
+  document.getElementById("tpTitle").style.color = net.color;
+
+  const cells = t.cells || (t.isRouter ? [{ cellid: t.cellid, lac: t.lac, samples: t.samples, range: t.range }] : []);
+  const towerId = t.radio === "LTE" && cells[0] ? `eNB ${Math.floor(cells[0].cellid / 256)}` : null;
+  const lacs = [...new Set(cells.map((x) => x.lac).filter((x) => x !== undefined && x !== null))];
+  const reports = cells.reduce((n, x) => n + (x.samples || 0), 0);
+  const maxRange = Math.max(0, ...cells.map((x) => x.range || 0));
+  const cellIds = cells.slice(0, 6).map((x) => x.cellid).join(", ") + (cells.length > 6 ? ` +${cells.length - 6} more` : "");
+
+  const rows = [
+    ["Network", net.name],
+    ["Type", radioLabel(t.radio) || "unknown"],
+    ["Distance", formatDist(dist)],
+    ["Direction", `${Math.round(brg)}° ${cp} (${POINT_WORDS[cp]})`],
+    ["Coordinates", `${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`],
+    towerId && ["Tower ID", towerId],
+    ["Cells", cells.length ? `${cells.length} recorded (${cellIds})` : "—"],
+    lacs.length && ["TAC / LAC", lacs.join(", ")],
+    reports && ["Phone reports", String(reports)],
+    maxRange && ["Est. reach", formatDist(maxRange)],
+  ].filter(Boolean);
+  const grid = document.getElementById("tpGrid");
+  grid.innerHTML = "";
+  for (const [k, v] of rows) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    grid.append(dt, dd);
+  }
+
+  document.getElementById("tpAdvice").textContent =
+    `To use this tower: put the router at a window on the ${POINT_WORDS[cp]} side of the house ` +
+    `(facing ${Math.round(brg)}° ${cp}), as high as possible. Walls, roofs and trees in that direction all weaken the signal.`;
+
+  const map = document.getElementById("tpMap");
+  map.href = `https://www.google.com/maps/search/?api=1&query=${t.lat.toFixed(6)},${t.lon.toFixed(6)}`;
+
+  const isLocked = lockedSite && siteId(lockedSite) === siteId(t);
+  document.getElementById("tpAim").textContent = isLocked ? "UNLOCK" : "AIM AT THIS TOWER";
+
+  const addrEl = document.getElementById("tpAddress");
+  addrEl.textContent = "Looking up…";
+  const token = ++addrToken;
+  lookupAddress(t.lat, t.lon)
+    .then((a) => { if (token === addrToken) addrEl.textContent = a; })
+    .catch(() => { if (token === addrToken) addrEl.textContent = "Address lookup unavailable right now."; });
+
+  towerPanel.hidden = false;
+}
+
+function setLock(t) {
+  lockedSite = t;
+  unlockBtn.hidden = !t;
+}
+
+document.getElementById("tpClose").onclick = () => { towerPanel.hidden = true; };
+document.getElementById("tpAim").onclick = () => {
+  const isLocked = lockedSite && siteId(lockedSite) === siteId(panelSite);
+  setLock(isLocked ? null : panelSite);
+  towerPanel.hidden = true;
+};
+unlockBtn.onclick = () => setLock(null);
+
+// Tap on the radar → nearest blip within reach
+document.getElementById("radar").addEventListener("click", (e) => {
+  const cv = e.currentTarget;
+  const rect = cv.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) * (cv.width / rect.width);
+  const sy = (e.clientY - rect.top) * (cv.height / rect.height);
+  let best = null;
+  for (const h of hits) {
+    const d = Math.hypot(h.x - sx, h.y - sy) * (h.faded ? 1.6 : 1);   // prefer bright blips
+    if (d < cv.width / 14 && (!best || d < best.d)) best = { ...h, d };
+  }
+  if (best) openTower(best.t);
+});
 
 // ===== GPS =====
 const statusEl = document.getElementById("status");
@@ -749,6 +865,7 @@ function draw() {
   sweep = (sweep + 0.03) % (Math.PI * 2);
 
   // Towers — other networks small and faded, the one you're aiming for on top
+  hits = [];
   const focus = focusNetwork();
   let nearest = null;
   for (const t of towers) {
@@ -763,6 +880,7 @@ function draw() {
       const isFocus = !focus || t.network === focus;
       if (isFocus !== pass || t.dist > range || !matchesRadio(t)) continue;
       const [x, y] = polar(c, (t.dist / range) * plotR, t.bearing);
+      hits.push({ x, y, t, faded: !isFocus });
       ctx.globalAlpha = isFocus ? 1 : 0.35;
       ctx.fillStyle = NETWORKS[t.network].color;
       ctx.shadowColor = ctx.fillStyle;
@@ -780,6 +898,7 @@ function draw() {
     if (settings.target === "router") nearest = routerCell;
     if (routerCell.dist <= range) {
       const [x, y] = polar(c, (routerCell.dist / range) * plotR, routerCell.bearing);
+      hits.push({ x, y, t: routerCell, faded: false });
       ctx.fillStyle = NETWORKS.rain.color;
       ctx.beginPath(); ctx.arc(x, y, W / 45, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = "#ffffff"; ctx.lineWidth = W / 200;
@@ -807,6 +926,12 @@ function draw() {
     nearest = est ? { isSignal: true, dist: range, bearing: est.bearing, est } : null;
   }
 
+  if (lockedSite) {
+    lockedSite.dist = distance(user.lat, user.lon, lockedSite.lat, lockedSite.lon);
+    lockedSite.bearing = bearing(user.lat, user.lon, lockedSite.lat, lockedSite.lon);
+    nearest = lockedSite;
+  }
+
   if (!nearest) {
     const isRouter = settings.target === "router";
     if (settings.target === "signal") {
@@ -831,6 +956,10 @@ function draw() {
     ctx.strokeStyle = "#ffffff";
     ctx.lineWidth = W / 150;
     ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
+    if (nearest === lockedSite) {
+      ctx.strokeStyle = "#ffcc00"; ctx.lineWidth = W / 200;
+      ctx.beginPath(); ctx.arc(x, y, W / 26, 0, Math.PI * 2); ctx.stroke();
+    }
 
     if (nearest.isSignal) {
       const b = nearest.est.best;
@@ -840,9 +969,9 @@ function draw() {
       document.getElementById("targetBearing").textContent =
         `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)} · ${nearest.est.count} reading(s)`;
     } else {
-      document.getElementById("targetName").textContent = nearest.isRouter
+      document.getElementById("targetName").textContent = (nearest === lockedSite ? "🔒 " : "") + (nearest.isRouter
         ? `Your router's cell · ${radioLabel(nearest.radio)}`
-        : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + radioLabel(nearest.radio) : ""}`;
+        : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + radioLabel(nearest.radio) : ""}`);
       document.getElementById("targetDist").textContent = formatDist(nearest.dist);
       document.getElementById("targetBearing").textContent =
         `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;
