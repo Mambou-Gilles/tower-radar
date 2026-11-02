@@ -121,3 +121,25 @@ main {
 }
 .panel-buttons .primary { background: var(--green); color: #031a08; font-weight: bold; }
 .link { background: none; border: none; color: #7fbf8f; text-decoration: underline; font-family: inherit; font-size: 12px; align-self: center; }
+
+.facing { text-align: center; font-size: 14px; letter-spacing: 2px; color: var(--green-dim); }
+.facing span { display: block; font-size: 30px; color: var(--green); text-shadow: 0 0 10px var(--green); margin-top: 4px; }
+.row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.row2 input { width: 100%; min-width: 0; }
+.with-sign { display: flex; gap: 6px; }
+.with-sign input { flex: 1; min-width: 0; }
+.with-sign button {
+  width: 42px; background: transparent; color: var(--green); border: 1px solid var(--green-dim);
+  border-radius: 6px; font-size: 18px; font-family: inherit;
+}
+.sig-summary { font-size: 14px; line-height: 1.5; color: var(--text); }
+.sig-summary b { color: var(--green); }
+.sig-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.sig-list li {
+  display: flex; align-items: center; gap: 10px; font-size: 13px;
+  border: 1px solid var(--green-dim); border-radius: 6px; padding: 8px 10px;
+}
+.sig-list .sinr { font-weight: bold; min-width: 58px; }
+.sig-list .meta { flex: 1; color: #9fdcae; }
+.sig-list button { background: none; border: none; color: #ff7777; font-size: 16px; }
+#openSignal { margin-top: 4px; }

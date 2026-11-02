@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 5b: wider Rain search, focus highlighting =====
+// ===== Tower Radar — Phase 6: Signal Test mode =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -334,7 +334,117 @@ targetModeEl.value = settings.target;
 targetModeEl.onchange = () => {
   settings.target = targetModeEl.value;
   store.set("settings", settings);
+  if (settings.target === "signal") return;
   if (settings.apiKey) loadTowers().then(autoZoom); else autoZoom();
+};
+
+
+// ===== Signal Test: record router SINR per direction =====
+let readings = store.get("signalTests", []);   // {label, sinr, rsrp, heading, lat, lon, time}
+const sigPanel = document.getElementById("signalPanel");
+const sigMsg = document.getElementById("sigMsg");
+
+function sinrColor(v) { return v >= 10 ? "#39ff6a" : v >= 3 ? "#ffcc00" : "#ff4d4d"; }
+function sinrWord(v)  { return v >= 20 ? "excellent" : v >= 10 ? "good" : v >= 3 ? "fair" : "poor"; }
+
+// Direction estimate: the best reading alone until there are 3+, then a circular
+// average weighted heavily toward the better readings
+function signalEstimate() {
+  const rs = readings.filter((r) => r.heading !== null);
+  if (!rs.length) return null;
+  const best = rs.reduce((a, b) => (b.sinr > a.sinr ? b : a));
+  if (rs.length < 3) return { bearing: best.heading, best, count: rs.length, weighted: false };
+  const min = Math.min(...rs.map((r) => r.sinr));
+  let x = 0, y = 0;
+  for (const r of rs) {
+    const w = (r.sinr - min) ** 2 + 0.01;
+    x += w * Math.cos(toRad(r.heading));
+    y += w * Math.sin(toRad(r.heading));
+  }
+  return { bearing: (toDeg(Math.atan2(y, x)) + 360) % 360, best, count: rs.length, weighted: true };
+}
+
+function parseNum(v) {
+  v = String(v || "").trim().replace(",", ".").replace(/[^\d.\-]/g, "");
+  if (v === "" || v === "-" || v === ".") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function renderReadings() {
+  const list = document.getElementById("sigList");
+  list.innerHTML = "";
+  [...readings].map((r, i) => ({ r, i })).sort((a, b) => b.r.sinr - a.r.sinr).forEach(({ r, i }) => {
+    const li = document.createElement("li");
+    const sinr = document.createElement("span");
+    sinr.className = "sinr"; sinr.style.color = sinrColor(r.sinr); sinr.textContent = `${r.sinr} dB`;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    const dir = r.heading === null ? "no direction" : `${Math.round(r.heading)}° ${compassPoint(r.heading)}`;
+    meta.textContent = [r.label, dir, r.rsrp !== null ? `${r.rsrp} dBm` : ""].filter(Boolean).join(" · ");
+    const del = document.createElement("button");
+    del.textContent = "✕"; del.setAttribute("aria-label", "Delete reading");
+    del.onclick = () => { readings.splice(i, 1); store.set("signalTests", readings); renderReadings(); };
+    li.append(sinr, meta, del);
+    list.append(li);
+  });
+
+  const sum = document.getElementById("sigSummary");
+  const est = signalEstimate();
+  if (!est) { sum.textContent = readings.length ? "Readings need a compass direction to point anywhere." : "No readings yet."; return; }
+  const b = est.best;
+  sum.innerHTML = "";
+  const line1 = document.createElement("div");
+  line1.innerHTML = `Best spot: <b></b>`;
+  line1.querySelector("b").textContent =
+    `${b.label ? b.label + " — " : ""}${b.sinr} dB (${sinrWord(b.sinr)}) facing ${Math.round(b.heading)}° ${compassPoint(b.heading)}`;
+  const line2 = document.createElement("div");
+  line2.textContent = est.weighted
+    ? `Tower is most likely toward ${Math.round(est.bearing)}° ${compassPoint(est.bearing)} (from ${est.count} readings).`
+    : `Record ${3 - est.count} more direction(s) for a tower-direction estimate.`;
+  sum.append(line1, line2);
+}
+
+let facingTimer = null;
+document.getElementById("openSignal").onclick = () => {
+  renderReadings();
+  sigMsg.textContent = heading === null ? "No compass yet — readings will be saved without a direction." : "";
+  sigPanel.hidden = false;
+  facingTimer = setInterval(() => {
+    document.getElementById("facingNow").textContent =
+      heading === null ? "—" : `${Math.round(heading)}° ${compassPoint(heading)}`;
+  }, 200);
+};
+document.getElementById("sigClose").onclick = () => { sigPanel.hidden = true; clearInterval(facingTimer); };
+
+document.getElementById("sigSign").onclick = () => {
+  const el = document.getElementById("sigSinr");
+  el.value = el.value.trim().startsWith("-") ? el.value.trim().slice(1) : "-" + el.value.trim();
+};
+
+document.getElementById("sigRecord").onclick = () => {
+  const sinr = parseNum(document.getElementById("sigSinr").value);
+  let rsrp = parseNum(document.getElementById("sigRsrp").value);
+  if (sinr === null) { sigMsg.textContent = "Enter the SINR value from the router first."; return; }
+  if (rsrp !== null && rsrp > 0) rsrp = -rsrp;          // RSRP is always negative
+  readings.push({
+    label: document.getElementById("sigLabel").value.trim().slice(0, 40),
+    sinr, rsrp,
+    heading: heading === null ? null : Math.round(heading),
+    lat: user.lat, lon: user.lon, time: Date.now(),
+  });
+  store.set("signalTests", readings);
+  document.getElementById("sigLabel").value = "";
+  document.getElementById("sigSinr").value = "";
+  document.getElementById("sigRsrp").value = "";
+  sigMsg.textContent = `Saved: ${sinr} dB${heading === null ? " (no direction)" : ` facing ${Math.round(heading)}° ${compassPoint(heading)}`}.`;
+  if (settings.target !== "signal") { settings.target = "signal"; targetModeEl.value = "signal"; store.set("settings", settings); }
+  renderReadings();
+};
+
+document.getElementById("sigClear").onclick = () => {
+  if (!readings.length || !confirm("Delete all signal readings?")) return;
+  readings = []; store.set("signalTests", readings); renderReadings();
 };
 
 // ===== GPS =====
@@ -585,13 +695,41 @@ function draw() {
       ctx.beginPath(); ctx.arc(x, y, W / 28, 0, Math.PI * 2); ctx.stroke();
     }
   }
+  // Signal test spokes: direction you faced, length = SINR
+  const est = signalEstimate();
+  for (const r of readings) {
+    if (r.heading === null) continue;
+    const frac = Math.min(1, Math.max(0.12, (r.sinr + 5) / 30));
+    const [x, y] = polar(c, frac * plotR, r.heading);
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = sinrColor(r.sinr);
+    ctx.lineWidth = W / 70; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.lineCap = "butt";
+    if (est && r === est.best) {
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = W / 250;
+      ctx.beginPath(); ctx.arc(x, y, W / 40, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  if (settings.target === "signal") {
+    nearest = est ? { isSignal: true, dist: range, bearing: est.bearing, est } : null;
+  }
+
   if (!nearest) {
     const isRouter = settings.target === "router";
+    if (settings.target === "signal") {
+      document.getElementById("targetName").textContent = "No signal readings yet";
+      document.getElementById("targetDist").textContent = "—";
+      document.getElementById("targetBearing").textContent = "Tap 📶 SIGNAL TEST";
+      aimEl.textContent = "";
+    } else {
     document.getElementById("targetName").textContent = isRouter ? "No router cell set"
       : settings.target === "rain" ? "No Rain cells found" : "No towers found";
     document.getElementById("targetDist").textContent = "—";
     document.getElementById("targetBearing").textContent = isRouter ? "Add TAC + Cell ID in ⚙" : "";
     aimEl.textContent = "";
+    }
   }
 
   // Line to nearest tower
@@ -602,12 +740,21 @@ function draw() {
     ctx.lineWidth = W / 150;
     ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
 
-    document.getElementById("targetName").textContent = nearest.isRouter
-      ? `Your router's cell (${nearest.radio})`
-      : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + nearest.radio : ""}`;
-    document.getElementById("targetDist").textContent = formatDist(nearest.dist);
-    document.getElementById("targetBearing").textContent =
-      `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;
+    if (nearest.isSignal) {
+      const b = nearest.est.best;
+      document.getElementById("targetName").textContent =
+        nearest.est.weighted ? "Estimated tower direction" : "Best signal so far";
+      document.getElementById("targetDist").textContent = `${b.sinr} dB`;
+      document.getElementById("targetBearing").textContent =
+        `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)} · ${nearest.est.count} reading(s)`;
+    } else {
+      document.getElementById("targetName").textContent = nearest.isRouter
+        ? `Your router's cell (${nearest.radio})`
+        : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + nearest.radio : ""}`;
+      document.getElementById("targetDist").textContent = formatDist(nearest.dist);
+      document.getElementById("targetBearing").textContent =
+        `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;
+    }
 
     // Aiming guidance: how far to turn, from -180 (left) to +180 (right)
     if (heading !== null) {

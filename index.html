@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=7" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
   <header class="hud">
@@ -22,6 +22,7 @@
         <option value="rain">NEAREST RAIN</option>
         <option value="any">NEAREST ANY NETWORK</option>
         <option value="router">MY ROUTER'S CELL</option>
+        <option value="signal">BEST SIGNAL DIRECTION</option>
       </select>
       <div id="targetName" class="name">—</div>
       <div id="targetDist" class="dist">—</div>
@@ -35,6 +36,8 @@
       <span id="rangeLabel">1.5 km</span>
       <button id="zoomIn" aria-label="Zoom in">+</button>
     </section>
+
+    <button id="openSignal" class="compass-btn">📶 SIGNAL TEST</button>
   </main>
 
   <div id="settings" class="overlay" hidden>
@@ -78,6 +81,39 @@
     </div>
   </div>
 
-  <script src="app.js?v=7"></script>
+  <div id="signalPanel" class="overlay" hidden>
+    <div class="panel">
+      <h2>SIGNAL TEST</h2>
+      <small>Hold the phone at the window with its top pointing outward — the way the router would face.
+        Move the router there, wait about a minute, then read SINR from its device info page.</small>
+      <div class="facing">FACING <span id="facingNow">—</span></div>
+
+      <label class="field">Spot name (optional)
+        <input id="sigLabel" autocomplete="off" placeholder="e.g. Bedroom window" />
+      </label>
+      <div class="row2">
+        <label class="field">SINR (dB)
+          <span class="with-sign">
+            <button id="sigSign" type="button" aria-label="Make negative">±</button>
+            <input id="sigSinr" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 5" />
+          </span>
+        </label>
+        <label class="field">RSRP (dBm)
+          <input id="sigRsrp" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. -95" />
+        </label>
+      </div>
+
+      <div class="panel-buttons">
+        <button id="sigRecord" class="primary">RECORD</button>
+        <button id="sigClose">CLOSE</button>
+      </div>
+      <div id="sigMsg" class="settings-msg"></div>
+      <div id="sigSummary" class="sig-summary"></div>
+      <ul id="sigList" class="sig-list"></ul>
+      <button id="sigClear" class="link">Delete all readings</button>
+    </div>
+  </div>
+
+  <script src="app.js?v=8"></script>
 </body>
 </html>
