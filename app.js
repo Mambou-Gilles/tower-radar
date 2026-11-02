@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 5: GPS + compass + live OpenCellID data =====
+// ===== Tower Radar — Phase 5b: wider Rain search, focus highlighting =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -111,32 +111,94 @@ function toSites(cells, network) {
   }));
 }
 
-function findCached(network, lat, lon) {
+function findCached(network, lat, lon, grid) {
   const list = store.get(`cells:${network}`, []);
   const maxAge = CACHE_DAYS * 86400000;
-  return list.find((e) => Date.now() - e.time < maxAge && distance(lat, lon, e.lat, e.lon) < RELOAD_AFTER_M);
+  return list.find((e) => (e.grid || 1) === grid && Date.now() - e.time < maxAge &&
+                          distance(lat, lon, e.lat, e.lon) < RELOAD_AFTER_M);
 }
 
-function saveCache(network, lat, lon, sites) {
-  const list = store.get(`cells:${network}`, []).filter((e) => distance(lat, lon, e.lat, e.lon) >= RELOAD_AFTER_M);
-  list.unshift({ lat, lon, time: Date.now(), sites });
-  store.set(`cells:${network}`, list.slice(0, 10));
+function saveCache(network, lat, lon, grid, sites) {
+  const list = store.get(`cells:${network}`, []).filter((e) =>
+    (e.grid || 1) !== grid || distance(lat, lon, e.lat, e.lon) >= RELOAD_AFTER_M);
+  list.unshift({ lat, lon, grid, time: Date.now(), sites });
+  store.set(`cells:${network}`, list.slice(0, 12));
 }
 
-async function loadNetwork(network, lat, lon, force) {
-  if (!force) {
-    const hit = findCached(network, lat, lon);
-    if (hit) return { sites: hit.sites, cached: true };
+// Centres of an n×n grid of 2 km boxes around (lat, lon), nearest first
+// skip = size of an inner grid already scanned (and found empty), so it isn't paid for twice
+function tileCentres(lat, lon, n, skip = 0) {
+  const step = 2 * BOX_HALF_M, half = (n - 1) / 2, inner = (skip - 1) / 2, out = [];
+  for (let i = -half; i <= half; i++) {
+    for (let j = -half; j <= half; j++) {
+      if (skip && Math.abs(i) <= inner && Math.abs(j) <= inner) continue;
+      out.push([lat + (i * step) / 111320, lon + (j * step) / (111320 * Math.cos(toRad(lat)))]);
+    }
   }
-  const box = bboxAround(lat, lon).join(",");
-  let cells = [];
-  for (const mnc of NETWORKS[network].mnc) {
-    const data = await apiGet("getInArea", { BBOX: box, mcc: 655, mnc, limit: 50 });
-    cells = cells.concat(data.cells || []);
+  return out.sort((a, b) => distance(lat, lon, a[0], a[1]) - distance(lat, lon, b[0], b[1]));
+}
+
+async function scanGrid(network, lat, lon, n, skip = 0) {
+  const jobs = [];
+  for (const [cLat, cLon] of tileCentres(lat, lon, n, skip)) {
+    for (const mnc of NETWORKS[network].mnc) jobs.push({ box: bboxAround(cLat, cLon).join(","), mnc });
   }
-  const sites = toSites(cells, network);
-  saveCache(network, lat, lon, sites);
-  return { sites, cached: false };
+  const total = jobs.length;
+  const seen = new Map();          // de-duplicate cells that appear in two boxes
+  let done = 0;
+  const worker = async () => {
+    while (jobs.length) {
+      const j = jobs.shift();
+      const data = await apiGet("getInArea", { BBOX: j.box, mcc: 655, mnc: j.mnc, limit: 50 });
+      for (const c of data.cells || []) seen.set(`${c.mnc}-${c.radio}-${c.lac}-${c.cellid}`, c);
+      done++;
+      if (n > 1) { dataStatus = `SCANNING ${NETWORKS[network].name.toUpperCase()} ${done}/${total}`; renderStatus(); }
+    }
+  };
+  await Promise.all([1, 2, 3, 4].map(worker));   // 4 requests at a time
+  return toSites([...seen.values()], network);
+}
+
+const GRIDS = [1, 3, 5];          // 1×1 (±1 km), 3×3 (±3 km), 5×5 (±5 km)
+
+// widen = keep searching bigger areas until something is found
+async function loadNetwork(network, lat, lon, force, widen) {
+  const grids = widen ? GRIDS : [1];
+  let sites = [], cached = false, grid = 1, prev = 0;
+  for (grid of grids) {
+    const hit = !force && findCached(network, lat, lon, grid);
+    if (hit) { sites = hit.sites; cached = true; }
+    else { sites = await scanGrid(network, lat, lon, grid, prev); saveCache(network, lat, lon, grid, sites); }
+    if (sites.length) break;
+    prev = grid;
+  }
+  return { sites, cached, grid };
+}
+
+// The network the user is aiming for (router cell counts as Rain)
+function focusNetwork() {
+  return settings.target === "any" ? null : "rain";
+}
+
+function pickTarget() {
+  if (settings.target === "router") return routerCell;
+  let best = null;
+  for (const t of towers) {
+    if (settings.target !== "any" && t.network !== settings.target) continue;
+    const d = distance(user.lat, user.lon, t.lat, t.lon);
+    if (!best || d < best.d) best = { t, d };
+  }
+  return best && best.t;
+}
+
+// Zoom so the target fits on the radar
+function autoZoom() {
+  const t = pickTarget();
+  if (!t) return;
+  const d = distance(user.lat, user.lon, t.lat, t.lon) * 1.15;
+  const i = RANGES.findIndex((r) => r >= d);
+  rangeIndex = i === -1 ? RANGES.length - 1 : i;
+  updateRangeLabel();
 }
 
 async function loadTowers(force = false) {
@@ -149,16 +211,29 @@ async function loadTowers(force = false) {
   const lat = user.lat, lon = user.lon;
   const found = [];
   let anyCached = false;
+  const focus = focusNetwork();
+  const notes = [];
   try {
-    for (const n of settings.networks) {
-      const { sites, cached } = await loadNetwork(n, lat, lon, force);
+    // Scan the focus network first so its wider search shows progress early
+    const order = [...settings.networks].sort((a, b) => (b === focus) - (a === focus));
+    for (const n of order) {
+      const widen = n === focus;
+      const { sites, cached, grid } = await loadNetwork(n, lat, lon, force, widen);
       found.push(...sites);
       anyCached = anyCached || cached;
+      if (widen) {
+        const name = NETWORKS[n].name;
+        if (!sites.length) notes.push(`No ${name} cells recorded in OpenCellID within ~5 km. ${name} may be under-mapped here — your router's Cell ID (⚙) is the best way to find its tower.`);
+        else if (grid > 1) notes.push(`No ${name} cells within ~1 km — searched out to ~${grid} km.`);
+      }
     }
+    if (focus && !settings.networks.includes(focus)) notes.push("Rain is unticked in ⚙ Networks.");
     towers = found;
     loadedAt = { lat, lon };
     dataStatus = `${anyCached ? "SAVED" : "LIVE"} ${found.length}`;
-    if (!found.length) dataMsgEl.textContent = "No cells recorded within ~1 km of you for the selected networks.";
+    if (!found.length) notes.push("No cells recorded near you for the selected networks.");
+    dataMsgEl.textContent = notes.join(" ");
+    autoZoom();
   } catch (e) {
     dataStatus = "API ERROR";
     dataMsgEl.textContent = e.message === "BLOCKED"
@@ -256,7 +331,11 @@ document.getElementById("clearCache").onclick = () => {
 };
 
 targetModeEl.value = settings.target;
-targetModeEl.onchange = () => { settings.target = targetModeEl.value; store.set("settings", settings); };
+targetModeEl.onchange = () => {
+  settings.target = targetModeEl.value;
+  store.set("settings", settings);
+  if (settings.apiKey) loadTowers().then(autoZoom); else autoZoom();
+};
 
 // ===== GPS =====
 const statusEl = document.getElementById("status");
@@ -468,7 +547,8 @@ function draw() {
   }
   sweep = (sweep + 0.03) % (Math.PI * 2);
 
-  // Towers
+  // Towers — other networks small and faded, the one you're aiming for on top
+  const focus = focusNetwork();
   let nearest = null;
   for (const t of towers) {
     t.dist = distance(user.lat, user.lon, t.lat, t.lon);
@@ -476,14 +556,20 @@ function draw() {
     if (settings.target === "any" || t.network === settings.target) {
       if (!nearest || t.dist < nearest.dist) nearest = t;
     }
-    if (t.dist > range) continue;
-
-    const [x, y] = polar(c, (t.dist / range) * plotR, t.bearing);
-    ctx.fillStyle = NETWORKS[t.network].color;
-    ctx.shadowColor = ctx.fillStyle;
-    ctx.shadowBlur = W / 40;
-    ctx.beginPath(); ctx.arc(x, y, W / 60, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
+  }
+  for (const pass of [false, true]) {
+    for (const t of towers) {
+      const isFocus = !focus || t.network === focus;
+      if (isFocus !== pass || t.dist > range) continue;
+      const [x, y] = polar(c, (t.dist / range) * plotR, t.bearing);
+      ctx.globalAlpha = isFocus ? 1 : 0.35;
+      ctx.fillStyle = NETWORKS[t.network].color;
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur = isFocus ? W / 40 : 0;
+      ctx.beginPath(); ctx.arc(x, y, isFocus ? W / 60 : W / 110, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+    }
   }
 
   // Router's own cell: bigger blip with a ring
@@ -499,10 +585,12 @@ function draw() {
       ctx.beginPath(); ctx.arc(x, y, W / 28, 0, Math.PI * 2); ctx.stroke();
     }
   }
-  if (!nearest && settings.target === "router") {
-    document.getElementById("targetName").textContent = "No router cell set";
+  if (!nearest) {
+    const isRouter = settings.target === "router";
+    document.getElementById("targetName").textContent = isRouter ? "No router cell set"
+      : settings.target === "rain" ? "No Rain cells found" : "No towers found";
     document.getElementById("targetDist").textContent = "—";
-    document.getElementById("targetBearing").textContent = "Add TAC + Cell ID in ⚙";
+    document.getElementById("targetBearing").textContent = isRouter ? "Add TAC + Cell ID in ⚙" : "";
     aimEl.textContent = "";
   }
 
