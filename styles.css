@@ -1,0 +1,67 @@
+:root {
+  --bg: #050a05;
+  --green: #39ff6a;
+  --green-dim: #1a6b30;
+  --text: #c8ffd6;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Courier New", monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-x: hidden;
+}
+
+.hud {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--green-dim);
+}
+
+.title { color: var(--green); font-weight: bold; letter-spacing: 3px; }
+.status { font-size: 12px; color: #ffcc00; }
+
+main {
+  width: 100%;
+  max-width: 480px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+#radar {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  box-shadow: 0 0 30px rgba(57, 255, 106, 0.35);
+}
+
+.target { text-align: center; }
+.target .label { font-size: 11px; letter-spacing: 2px; color: var(--green-dim); }
+.target .name { font-size: 18px; margin-top: 4px; }
+.target .dist { font-size: 42px; font-weight: bold; color: var(--green); text-shadow: 0 0 10px var(--green); }
+.target .bearing { font-size: 14px; }
+
+.controls { display: flex; align-items: center; gap: 20px; }
+.controls button {
+  width: 48px; height: 48px;
+  font-size: 24px;
+  background: transparent;
+  color: var(--green);
+  border: 2px solid var(--green);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.controls button:active { background: var(--green-dim); }
+#rangeLabel { min-width: 70px; text-align: center; }

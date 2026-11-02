@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Tower Radar</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hud">
+    <span class="title">TOWER RADAR</span>
+    <span id="status" class="status">MOCK DATA</span>
+  </header>
+
+  <main>
+    <canvas id="radar"></canvas>
+
+    <section class="target">
+      <div class="label">NEAREST TARGET</div>
+      <div id="targetName" class="name">—</div>
+      <div id="targetDist" class="dist">—</div>
+      <div id="targetBearing" class="bearing">—</div>
+    </section>
+
+    <section class="controls">
+      <button id="zoomOut" aria-label="Zoom out">−</button>
+      <span id="rangeLabel">1.5 km</span>
+      <button id="zoomIn" aria-label="Zoom in">+</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
