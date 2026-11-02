@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 6: Signal Test mode =====
+// ===== Tower Radar — Phase 6b: per-network targets, type filter, compare =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -42,9 +42,14 @@ const store = {
 };
 
 const settings = Object.assign(
-  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", router: { radio: "LTE", lac: "", cellid: "" } },
+  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", radio: "all", router: { radio: "LTE", lac: "", cellid: "" } },
   store.get("settings", {})
 );
+
+// Friendly names for radio technologies
+const RADIO_LABEL = { NR: "5G", LTE: "4G", UMTS: "3G", GSM: "2G", CDMA: "CDMA", NBIOT: "NB-IoT" };
+function radioLabel(r) { return RADIO_LABEL[r] ? `${RADIO_LABEL[r]} (${r})` : r || ""; }
+function matchesRadio(t) { return settings.radio === "all" || t.radio === settings.radio; }
 
 // ===== OpenCellID data layer =====
 const API = "https://opencellid.org/cell";
@@ -169,7 +174,7 @@ async function loadNetwork(network, lat, lon, force, widen) {
     const hit = !force && findCached(network, lat, lon, grid);
     if (hit) { sites = hit.sites; cached = true; }
     else { sites = await scanGrid(network, lat, lon, grid, prev); saveCache(network, lat, lon, grid, sites); }
-    if (sites.length) break;
+    if (sites.some(matchesRadio)) break;
     prev = grid;
   }
   return { sites, cached, grid };
@@ -177,7 +182,8 @@ async function loadNetwork(network, lat, lon, force, widen) {
 
 // The network the user is aiming for (router cell counts as Rain)
 function focusNetwork() {
-  return settings.target === "any" ? null : "rain";
+  if (NETWORKS[settings.target]) return settings.target;
+  return settings.target === "any" ? null : "rain";   // router / signal modes are about Rain
 }
 
 function pickTarget() {
@@ -185,6 +191,7 @@ function pickTarget() {
   let best = null;
   for (const t of towers) {
     if (settings.target !== "any" && t.network !== settings.target) continue;
+    if (!matchesRadio(t)) continue;
     const d = distance(user.lat, user.lon, t.lat, t.lon);
     if (!best || d < best.d) best = { t, d };
   }
@@ -223,11 +230,12 @@ async function loadTowers(force = false) {
       anyCached = anyCached || cached;
       if (widen) {
         const name = NETWORKS[n].name;
-        if (!sites.length) notes.push(`No ${name} cells recorded in OpenCellID within ~5 km. ${name} may be under-mapped here — your router's Cell ID (⚙) is the best way to find its tower.`);
-        else if (grid > 1) notes.push(`No ${name} cells within ~1 km — searched out to ~${grid} km.`);
+        const kind = settings.radio === "all" ? "" : ` ${RADIO_LABEL[settings.radio]}`;
+        if (!sites.some(matchesRadio)) notes.push(`No ${name}${kind} cells recorded in OpenCellID within ~5 km — it may be under-mapped here.`);
+        else if (grid > 1) notes.push(`No ${name}${kind} cells within ~1 km — searched out to ~${grid} km.`);
       }
     }
-    if (focus && !settings.networks.includes(focus)) notes.push("Rain is unticked in ⚙ Networks.");
+    if (focus && !settings.networks.includes(focus)) notes.push(`${NETWORKS[focus].name} is unticked in ⚙ Networks.`);
     towers = found;
     loadedAt = { lat, lon };
     dataStatus = `${anyCached ? "SAVED" : "LIVE"} ${found.length}`;
@@ -330,9 +338,18 @@ document.getElementById("clearCache").onclick = () => {
   settingsMsg.textContent = "Saved tower data cleared. Next scan uses fresh data.";
 };
 
+const radioModeEl = document.getElementById("radioMode");
+radioModeEl.value = settings.radio;
+radioModeEl.onchange = () => {
+  settings.radio = radioModeEl.value;
+  store.set("settings", settings);
+  if (settings.apiKey) loadTowers().then(autoZoom); else autoZoom();
+};
+
 targetModeEl.value = settings.target;
 targetModeEl.onchange = () => {
   settings.target = targetModeEl.value;
+  if (NETWORKS[settings.target] && !settings.networks.includes(settings.target)) settings.networks.push(settings.target);
   store.set("settings", settings);
   if (settings.target === "signal") return;
   if (settings.apiKey) loadTowers().then(autoZoom); else autoZoom();
@@ -445,6 +462,80 @@ document.getElementById("sigRecord").onclick = () => {
 document.getElementById("sigClear").onclick = () => {
   if (!readings.length || !confirm("Delete all signal readings?")) return;
   readings = []; store.set("signalTests", readings); renderReadings();
+};
+
+
+// ===== Compare networks =====
+const comparePanel = document.getElementById("comparePanel");
+const COMPARE_COLS = [["NR", "5G"], ["LTE", "4G"], ["UMTS", "3G"]];
+
+function renderCompare() {
+  const table = document.getElementById("compareTable");
+  const rows = [];
+  const bestPer = {};          // closest distance per column, to highlight
+  for (const [id, n] of Object.entries(NETWORKS)) {
+    // Everything known around here: current scan + any saved wider scans (deduplicated)
+    const byKey = new Map();
+    for (const t of towers) if (t.network === id) byKey.set(t.siteKey || `${t.lat},${t.lon}`, t);
+    for (const e of store.get(`cells2:${id}`, [])) {
+      if (Date.now() - e.time > CACHE_DAYS * 86400000) continue;
+      if (distance(user.lat, user.lon, e.lat, e.lon) > RELOAD_AFTER_M) continue;
+      for (const t of e.sites) byKey.set(t.siteKey || `${t.lat},${t.lon}`, t);
+    }
+    const mine = [...byKey.values()];
+    const row = { id, n, scanned: settings.networks.includes(id) || mine.length > 0, cols: {}, within1: 0 };
+    for (const t of mine) {
+      const d = distance(user.lat, user.lon, t.lat, t.lon);
+      if (d <= 1000) row.within1++;
+      if (!row.cols[t.radio] || d < row.cols[t.radio]) row.cols[t.radio] = d;
+    }
+    for (const [r] of COMPARE_COLS) {
+      if (row.cols[r] !== undefined && (bestPer[r] === undefined || row.cols[r] < bestPer[r])) bestPer[r] = row.cols[r];
+    }
+    rows.push(row);
+  }
+
+  table.innerHTML = "";
+  const head = table.insertRow();
+  ["NETWORK", ...COMPARE_COLS.map(([, l]) => l), "SITES ≤1KM"].forEach((t) => {
+    const th = document.createElement("th"); th.textContent = t; head.append(th);
+  });
+  for (const row of rows) {
+    const tr = table.insertRow();
+    const name = tr.insertCell();
+    const dot = document.createElement("span");
+    dot.className = "dot"; dot.style.background = row.n.color;
+    name.append(dot, row.n.name);
+    for (const [r] of COMPARE_COLS) {
+      const td = tr.insertCell();
+      if (!row.scanned) { td.textContent = "not scanned"; td.className = "none"; }
+      else if (row.cols[r] === undefined) { td.textContent = "—"; td.className = "none"; }
+      else {
+        td.textContent = formatDist(row.cols[r]);
+        if (row.cols[r] === bestPer[r]) td.className = "best";
+      }
+    }
+    const cnt = tr.insertCell();
+    cnt.textContent = row.scanned ? String(row.within1) : "—";
+  }
+
+  const notes = [];
+  const unscanned = rows.filter((r) => !r.scanned).map((r) => r.n.name);
+  if (unscanned.length) notes.push(`Not scanned: ${unscanned.join(", ")} — tick them in ⚙ and tap RESCAN ALL.`);
+  if (!settings.apiKey) notes.push("Using fake towers — add your OpenCellID token in ⚙ for real data.");
+  notes.push("Each network is searched ~1 km around you; picking it as the target searches up to ~5 km.");
+  notes.push("Closer and more sites usually means a stronger, steadier signal. Positions are estimates from phone reports, and home-router networks (like Rain 5G) are under-recorded.");
+  document.getElementById("compareNotes").textContent = notes.join(" ");
+}
+
+document.getElementById("openCompare").onclick = () => { renderCompare(); comparePanel.hidden = false; };
+document.getElementById("compareClose").onclick = () => { comparePanel.hidden = true; };
+document.getElementById("compareRescan").onclick = async () => {
+  settings.networks = Object.keys(NETWORKS);
+  store.set("settings", settings);
+  document.getElementById("compareNotes").textContent = "Scanning all networks…";
+  await loadTowers();
+  renderCompare();
 };
 
 // ===== GPS =====
@@ -663,14 +754,14 @@ function draw() {
   for (const t of towers) {
     t.dist = distance(user.lat, user.lon, t.lat, t.lon);
     t.bearing = bearing(user.lat, user.lon, t.lat, t.lon);
-    if (settings.target === "any" || t.network === settings.target) {
+    if ((settings.target === "any" || t.network === settings.target) && matchesRadio(t)) {
       if (!nearest || t.dist < nearest.dist) nearest = t;
     }
   }
   for (const pass of [false, true]) {
     for (const t of towers) {
       const isFocus = !focus || t.network === focus;
-      if (isFocus !== pass || t.dist > range) continue;
+      if (isFocus !== pass || t.dist > range || !matchesRadio(t)) continue;
       const [x, y] = polar(c, (t.dist / range) * plotR, t.bearing);
       ctx.globalAlpha = isFocus ? 1 : 0.35;
       ctx.fillStyle = NETWORKS[t.network].color;
@@ -724,8 +815,9 @@ function draw() {
       document.getElementById("targetBearing").textContent = "Tap 📶 SIGNAL TEST";
       aimEl.textContent = "";
     } else {
+    const kind = settings.radio === "all" ? "" : ` ${RADIO_LABEL[settings.radio]}`;
     document.getElementById("targetName").textContent = isRouter ? "No router cell set"
-      : settings.target === "rain" ? "No Rain cells found" : "No towers found";
+      : NETWORKS[settings.target] ? `No ${NETWORKS[settings.target].name}${kind} cells found` : `No${kind} towers found`;
     document.getElementById("targetDist").textContent = "—";
     document.getElementById("targetBearing").textContent = isRouter ? "Add TAC + Cell ID in ⚙" : "";
     aimEl.textContent = "";
@@ -749,8 +841,8 @@ function draw() {
         `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)} · ${nearest.est.count} reading(s)`;
     } else {
       document.getElementById("targetName").textContent = nearest.isRouter
-        ? `Your router's cell (${nearest.radio})`
-        : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + nearest.radio : ""}`;
+        ? `Your router's cell · ${radioLabel(nearest.radio)}`
+        : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + radioLabel(nearest.radio) : ""}`;
       document.getElementById("targetDist").textContent = formatDist(nearest.dist);
       document.getElementById("targetBearing").textContent =
         `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;

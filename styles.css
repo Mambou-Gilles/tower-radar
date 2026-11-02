@@ -142,4 +142,15 @@ main {
 .sig-list .sinr { font-weight: bold; min-width: 58px; }
 .sig-list .meta { flex: 1; color: #9fdcae; }
 .sig-list button { background: none; border: none; color: #ff7777; font-size: 16px; }
-#openSignal { margin-top: 4px; }
+
+
+.selectors { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.bottom-buttons { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.table-wrap { overflow-x: auto; }
+.compare { width: 100%; border-collapse: collapse; font-size: 13px; }
+.compare th, .compare td { padding: 8px 6px; border-bottom: 1px solid var(--green-dim); text-align: right; white-space: nowrap; }
+.compare th { color: var(--green); font-weight: normal; letter-spacing: 1px; font-size: 11px; }
+.compare th:first-child, .compare td:first-child { text-align: left; }
+.compare .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.compare .best { color: var(--green); font-weight: bold; text-shadow: 0 0 8px var(--green); }
+.compare .none { color: #4d7a57; }

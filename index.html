@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=8" />
+  <link rel="stylesheet" href="styles.css?v=9" />
 </head>
 <body>
   <header class="hud">
@@ -18,12 +18,25 @@
     <button id="compassBtn" class="compass-btn" hidden>ENABLE COMPASS</button>
 
     <section class="target">
-      <select id="targetMode" class="target-mode" aria-label="Target">
-        <option value="rain">NEAREST RAIN</option>
-        <option value="any">NEAREST ANY NETWORK</option>
-        <option value="router">MY ROUTER'S CELL</option>
-        <option value="signal">BEST SIGNAL DIRECTION</option>
-      </select>
+      <div class="selectors">
+        <select id="targetMode" class="target-mode" aria-label="Target">
+          <option value="rain">NEAREST RAIN</option>
+          <option value="mtn">NEAREST MTN</option>
+          <option value="vodacom">NEAREST VODACOM</option>
+          <option value="telkom">NEAREST TELKOM</option>
+          <option value="cellc">NEAREST CELL C</option>
+          <option value="any">NEAREST ANY NETWORK</option>
+          <option value="router">MY ROUTER'S CELL</option>
+          <option value="signal">BEST SIGNAL DIRECTION</option>
+        </select>
+        <select id="radioMode" class="target-mode" aria-label="Network type">
+          <option value="all">ALL TYPES</option>
+          <option value="NR">5G ONLY</option>
+          <option value="LTE">4G ONLY</option>
+          <option value="UMTS">3G ONLY</option>
+          <option value="GSM">2G ONLY</option>
+        </select>
+      </div>
       <div id="targetName" class="name">—</div>
       <div id="targetDist" class="dist">—</div>
       <div id="targetBearing" class="bearing">—</div>
@@ -37,7 +50,10 @@
       <button id="zoomIn" aria-label="Zoom in">+</button>
     </section>
 
-    <button id="openSignal" class="compass-btn">📶 SIGNAL TEST</button>
+    <div class="bottom-buttons">
+      <button id="openSignal" class="compass-btn">📶 SIGNAL TEST</button>
+      <button id="openCompare" class="compass-btn">📊 COMPARE</button>
+    </div>
   </main>
 
   <div id="settings" class="overlay" hidden>
@@ -81,6 +97,20 @@
     </div>
   </div>
 
+  <div id="comparePanel" class="overlay" hidden>
+    <div class="panel">
+      <h2>COMPARE NETWORKS</h2>
+      <small>Distance to the nearest known 5G, 4G and 3G site of each network.
+        "—" means none recorded in the scanned area.</small>
+      <div class="table-wrap"><table id="compareTable" class="compare"></table></div>
+      <div id="compareNotes" class="sig-summary"></div>
+      <div class="panel-buttons">
+        <button id="compareRescan" class="primary">RESCAN ALL</button>
+        <button id="compareClose">CLOSE</button>
+      </div>
+    </div>
+  </div>
+
   <div id="signalPanel" class="overlay" hidden>
     <div class="panel">
       <h2>SIGNAL TEST</h2>
@@ -114,6 +144,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>
