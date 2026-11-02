@@ -1,12 +1,12 @@
-// ===== Tower Radar — Phase 4: GPS + compass + mock towers =====
+// ===== Tower Radar — Phase 5: GPS + compass + live OpenCellID data =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
-  rain:    { name: "Rain",    color: "#ff3cf0" },
-  vodacom: { name: "Vodacom", color: "#ff3b3b" },
-  mtn:     { name: "MTN",     color: "#ffd400" },
-  telkom:  { name: "Telkom",  color: "#3ba0ff" },
-  cellc:   { name: "Cell C",  color: "#ffffff" },
+  rain:    { name: "Rain",    color: "#ff3cf0", mnc: [38, 19] },
+  vodacom: { name: "Vodacom", color: "#ff3b3b", mnc: [1] },
+  mtn:     { name: "MTN",     color: "#ffd400", mnc: [10] },
+  telkom:  { name: "Telkom",  color: "#3ba0ff", mnc: [2] },
+  cellc:   { name: "Cell C",  color: "#ffffff", mnc: [7] },
 };
 
 // --- User location: starts at central Johannesburg, replaced by GPS once available ---
@@ -34,6 +34,230 @@ function buildMockTowers() {
 }
 buildMockTowers();
 
+// ===== Settings (stored only in this phone's browser) =====
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k)    { try { localStorage.removeItem(k); } catch {} },
+};
+
+const settings = Object.assign(
+  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", router: { radio: "LTE", lac: "", cellid: "" } },
+  store.get("settings", {})
+);
+
+// ===== OpenCellID data layer =====
+const API = "https://opencellid.org/cell";
+const BOX_HALF_M = 990;                  // ±990 m → ~3.9 km² (API limit is 4 km²)
+const CACHE_DAYS = 7;
+const RELOAD_AFTER_M = 400;              // re-scan when you move this far from the last scan
+
+let dataStatus = "MOCK";
+let loadedAt = null;                     // {lat, lon} of the last scan
+let loading = false;
+let routerCell = store.get("routerCell", null);
+const dataMsgEl = document.getElementById("dataMsg");
+
+class ApiError extends Error {}
+
+// Accept "123456", "0x1E240" or "1E240" (hex with letters)
+function parseId(v) {
+  v = String(v || "").trim();
+  if (!v) return null;
+  if (/^0x[0-9a-f]+$/i.test(v)) return parseInt(v, 16);
+  if (/^[0-9]+$/.test(v)) return parseInt(v, 10);
+  if (/^[0-9a-f]+$/i.test(v)) return parseInt(v, 16);
+  return null;
+}
+
+function bboxAround(lat, lon) {
+  const dLat = BOX_HALF_M / 111320;
+  const dLon = BOX_HALF_M / (111320 * Math.cos(toRad(lat)));
+  return [lat - dLat, lon - dLon, lat + dLat, lon + dLon].map((v) => v.toFixed(6));
+}
+
+async function apiGet(path, params) {
+  const qs = new URLSearchParams({ key: settings.apiKey, ...params, format: "json" });
+  let res;
+  try {
+    res = await fetch(`${API}/${path}?${qs}`);
+  } catch {
+    // fetch() itself failing usually means the browser blocked it (CORS) or there's no internet
+    throw new ApiError("BLOCKED");
+  }
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new ApiError(`Unexpected reply (HTTP ${res.status})`); }
+  if (data.error) throw new ApiError(data.error);
+  if (!res.ok) throw new ApiError(`HTTP ${res.status}`);
+  return data;
+}
+
+// Group cells into estimated sites. For LTE, ECI = eNB ID × 256 + sector,
+// so cells sharing an eNB ID are antennas on the same tower.
+function toSites(cells, network) {
+  const groups = new Map();
+  for (const c of cells) {
+    const siteKey = c.radio === "LTE" ? `LTE-${Math.floor(c.cellid / 256)}` : `${c.radio}-${c.cellid}`;
+    const w = Math.max(1, c.samples || 1);
+    const g = groups.get(siteKey) || { network, radio: c.radio, siteKey, lat: 0, lon: 0, w: 0, cells: [] };
+    g.lat += c.lat * w; g.lon += c.lon * w; g.w += w;
+    g.cells.push({ cellid: c.cellid, lac: c.lac ?? c.tac, mnc: c.mnc, samples: c.samples, range: c.range });
+    groups.set(siteKey, g);
+  }
+  return [...groups.values()].map((g) => ({
+    network: g.network, radio: g.radio, siteKey: g.siteKey,
+    lat: g.lat / g.w, lon: g.lon / g.w, cells: g.cells,
+  }));
+}
+
+function findCached(network, lat, lon) {
+  const list = store.get(`cells:${network}`, []);
+  const maxAge = CACHE_DAYS * 86400000;
+  return list.find((e) => Date.now() - e.time < maxAge && distance(lat, lon, e.lat, e.lon) < RELOAD_AFTER_M);
+}
+
+function saveCache(network, lat, lon, sites) {
+  const list = store.get(`cells:${network}`, []).filter((e) => distance(lat, lon, e.lat, e.lon) >= RELOAD_AFTER_M);
+  list.unshift({ lat, lon, time: Date.now(), sites });
+  store.set(`cells:${network}`, list.slice(0, 10));
+}
+
+async function loadNetwork(network, lat, lon, force) {
+  if (!force) {
+    const hit = findCached(network, lat, lon);
+    if (hit) return { sites: hit.sites, cached: true };
+  }
+  const box = bboxAround(lat, lon).join(",");
+  let cells = [];
+  for (const mnc of NETWORKS[network].mnc) {
+    const data = await apiGet("getInArea", { BBOX: box, mcc: 655, mnc, limit: 50 });
+    cells = cells.concat(data.cells || []);
+  }
+  const sites = toSites(cells, network);
+  saveCache(network, lat, lon, sites);
+  return { sites, cached: false };
+}
+
+async function loadTowers(force = false) {
+  if (!settings.apiKey) { dataStatus = "MOCK"; renderStatus(); return; }
+  if (loading) return;
+  loading = true;
+  dataStatus = "SCANNING…"; renderStatus();
+  dataMsgEl.textContent = "";
+
+  const lat = user.lat, lon = user.lon;
+  const found = [];
+  let anyCached = false;
+  try {
+    for (const n of settings.networks) {
+      const { sites, cached } = await loadNetwork(n, lat, lon, force);
+      found.push(...sites);
+      anyCached = anyCached || cached;
+    }
+    towers = found;
+    loadedAt = { lat, lon };
+    dataStatus = `${anyCached ? "SAVED" : "LIVE"} ${found.length}`;
+    if (!found.length) dataMsgEl.textContent = "No cells recorded within ~1 km of you for the selected networks.";
+  } catch (e) {
+    dataStatus = "API ERROR";
+    dataMsgEl.textContent = e.message === "BLOCKED"
+      ? "The browser couldn't reach OpenCellID (blocked or offline). Showing fake towers."
+      : `OpenCellID: ${e.message}. Showing fake towers.`;
+    buildMockTowers();
+  }
+  loading = false;
+  renderStatus();
+}
+
+async function lookupRouterCell() {
+  const r = settings.router;
+  const lac = parseId(r.lac), cellid = parseId(r.cellid);
+  if (!settings.apiKey || lac === null || cellid === null) { routerCell = null; store.del("routerCell"); return null; }
+  let lastErr;
+  for (const mnc of NETWORKS.rain.mnc) {
+    try {
+      const c = await apiGet("get", { mcc: 655, mnc, lac, cellid, radio: r.radio });
+      if (typeof c.lat === "number") {
+        routerCell = { network: "rain", isRouter: true, radio: c.radio || r.radio, lat: c.lat, lon: c.lon,
+                       lac, cellid, range: c.range, samples: c.samples };
+        store.set("routerCell", routerCell);
+        return routerCell;
+      }
+    } catch (e) { lastErr = e; }
+  }
+  routerCell = null; store.del("routerCell");
+  throw lastErr || new ApiError("Cell not found");
+}
+
+// Called on every GPS update: scan again only after moving far enough
+function maybeLoad() {
+  if (!settings.apiKey || loading) return;
+  if (!loadedAt || distance(user.lat, user.lon, loadedAt.lat, loadedAt.lon) > RELOAD_AFTER_M) loadTowers();
+}
+
+// ===== Settings panel =====
+const panel = document.getElementById("settings");
+const settingsMsg = document.getElementById("settingsMsg");
+const targetModeEl = document.getElementById("targetMode");
+
+document.getElementById("networkChecks").innerHTML = Object.entries(NETWORKS).map(([id, n]) =>
+  `<label><input type="checkbox" value="${id}"><span class="dot" style="background:${n.color}"></span>${n.name}</label>`
+).join("");
+
+function fillSettings() {
+  document.getElementById("apiKey").value = settings.apiKey;
+  document.querySelectorAll("#networkChecks input").forEach((cb) => { cb.checked = settings.networks.includes(cb.value); });
+  document.getElementById("routerRadio").value = settings.router.radio;
+  document.getElementById("routerLac").value = settings.router.lac;
+  document.getElementById("routerCell").value = settings.router.cellid;
+  settingsMsg.textContent = settings.apiKey ? "" : "Paste your token to use real tower data.";
+}
+
+document.getElementById("openSettings").onclick = () => { fillSettings(); panel.hidden = false; };
+document.getElementById("closeSettings").onclick = () => { panel.hidden = true; };
+
+document.getElementById("saveSettings").onclick = async () => {
+  settings.apiKey = document.getElementById("apiKey").value.trim();
+  settings.networks = [...document.querySelectorAll("#networkChecks input:checked")].map((cb) => cb.value);
+  settings.router = {
+    radio: document.getElementById("routerRadio").value,
+    lac: document.getElementById("routerLac").value.trim(),
+    cellid: document.getElementById("routerCell").value.trim(),
+  };
+  store.set("settings", settings);
+
+  if (!settings.apiKey) { settingsMsg.textContent = "Saved. No token, so fake towers are shown."; buildMockTowers(); dataStatus = "MOCK"; renderStatus(); return; }
+
+  settingsMsg.textContent = "Scanning…";
+  await loadTowers(true);
+  if (dataStatus === "API ERROR") { settingsMsg.textContent = dataMsgEl.textContent; return; }
+
+  let msg = `Found ${towers.length} tower site(s) within ~1 km.`;
+  if (settings.router.lac || settings.router.cellid) {
+    try {
+      const rc = await lookupRouterCell();
+      if (rc) {
+        msg += ` Router cell found ${formatDist(distance(user.lat, user.lon, rc.lat, rc.lon))} away.`;
+        settings.target = "router"; targetModeEl.value = "router"; store.set("settings", settings);
+      } else msg += " Router cell: enter both TAC and Cell ID.";
+    } catch (e) {
+      msg += ` Router cell not found in OpenCellID (${e.message === "BLOCKED" ? "blocked" : e.message}).`;
+    }
+  } else { routerCell = null; store.del("routerCell"); }
+  settingsMsg.textContent = msg;
+  setTimeout(() => { panel.hidden = true; }, 1800);
+};
+
+document.getElementById("clearCache").onclick = () => {
+  Object.keys(NETWORKS).forEach((n) => store.del(`cells:${n}`));
+  loadedAt = null;
+  settingsMsg.textContent = "Saved tower data cleared. Next scan uses fresh data.";
+};
+
+targetModeEl.value = settings.target;
+targetModeEl.onchange = () => { settings.target = targetModeEl.value; store.set("settings", settings); };
+
 // ===== GPS =====
 const statusEl = document.getElementById("status");
 let hasFix = false;
@@ -41,7 +265,7 @@ let gpsStatus = "FINDING GPS…";
 let compassStatus = "";
 
 function renderStatus() {
-  statusEl.textContent = [gpsStatus, compassStatus, "MOCK"].filter(Boolean).join(" · ");
+  statusEl.textContent = [gpsStatus, compassStatus, dataStatus].filter(Boolean).join(" · ");
 }
 
 function startGPS() {
@@ -61,10 +285,11 @@ function startGPS() {
       // First fix: move the mock towers around the real location
       if (!hasFix) {
         hasFix = true;
-        buildMockTowers();
+        if (!settings.apiKey) buildMockTowers();
       }
       gpsStatus = `GPS ±${Math.round(user.accuracy)} m`;
       renderStatus();
+      maybeLoad();
     },
     (err) => {
       gpsStatus = err.code === err.PERMISSION_DENIED ? "GPS DENIED" : "GPS ERROR";
@@ -248,7 +473,9 @@ function draw() {
   for (const t of towers) {
     t.dist = distance(user.lat, user.lon, t.lat, t.lon);
     t.bearing = bearing(user.lat, user.lon, t.lat, t.lon);
-    if (!nearest || t.dist < nearest.dist) nearest = t;
+    if (settings.target === "any" || t.network === settings.target) {
+      if (!nearest || t.dist < nearest.dist) nearest = t;
+    }
     if (t.dist > range) continue;
 
     const [x, y] = polar(c, (t.dist / range) * plotR, t.bearing);
@@ -259,6 +486,26 @@ function draw() {
     ctx.shadowBlur = 0;
   }
 
+  // Router's own cell: bigger blip with a ring
+  if (routerCell) {
+    routerCell.dist = distance(user.lat, user.lon, routerCell.lat, routerCell.lon);
+    routerCell.bearing = bearing(user.lat, user.lon, routerCell.lat, routerCell.lon);
+    if (settings.target === "router") nearest = routerCell;
+    if (routerCell.dist <= range) {
+      const [x, y] = polar(c, (routerCell.dist / range) * plotR, routerCell.bearing);
+      ctx.fillStyle = NETWORKS.rain.color;
+      ctx.beginPath(); ctx.arc(x, y, W / 45, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = W / 200;
+      ctx.beginPath(); ctx.arc(x, y, W / 28, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+  if (!nearest && settings.target === "router") {
+    document.getElementById("targetName").textContent = "No router cell set";
+    document.getElementById("targetDist").textContent = "—";
+    document.getElementById("targetBearing").textContent = "Add TAC + Cell ID in ⚙";
+    aimEl.textContent = "";
+  }
+
   // Line to nearest tower
   if (nearest) {
     const len = Math.min((nearest.dist / range) * plotR, plotR);
@@ -267,7 +514,9 @@ function draw() {
     ctx.lineWidth = W / 150;
     ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
 
-    document.getElementById("targetName").textContent = NETWORKS[nearest.network].name;
+    document.getElementById("targetName").textContent = nearest.isRouter
+      ? `Your router's cell (${nearest.radio})`
+      : `${NETWORKS[nearest.network].name}${nearest.radio ? " · " + nearest.radio : ""}`;
     document.getElementById("targetDist").textContent = formatDist(nearest.dist);
     document.getElementById("targetBearing").textContent =
       `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;
@@ -328,5 +577,6 @@ document.getElementById("zoomOut").onclick = () => {
 };
 
 updateRangeLabel();
+renderStatus();
 startGPS();
 draw();

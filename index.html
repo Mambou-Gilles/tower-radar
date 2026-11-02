@@ -4,12 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <header class="hud">
     <span class="title">TOWER RADAR</span>
     <span id="status" class="status">MOCK DATA</span>
+    <button id="openSettings" class="gear" aria-label="Settings">⚙</button>
   </header>
 
   <main>
@@ -17,11 +18,16 @@
     <button id="compassBtn" class="compass-btn" hidden>ENABLE COMPASS</button>
 
     <section class="target">
-      <div class="label">NEAREST TARGET</div>
+      <select id="targetMode" class="target-mode" aria-label="Target">
+        <option value="rain">NEAREST RAIN</option>
+        <option value="any">NEAREST ANY NETWORK</option>
+        <option value="router">MY ROUTER'S CELL</option>
+      </select>
       <div id="targetName" class="name">—</div>
       <div id="targetDist" class="dist">—</div>
       <div id="targetBearing" class="bearing">—</div>
       <div id="aim" class="aim"></div>
+      <div id="dataMsg" class="data-msg"></div>
     </section>
 
     <section class="controls">
@@ -31,6 +37,47 @@
     </section>
   </main>
 
-  <script src="app.js?v=4"></script>
+  <div id="settings" class="overlay" hidden>
+    <div class="panel">
+      <h2>SETTINGS</h2>
+
+      <label class="field">OpenCellID token
+        <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="paste token here" />
+        <small>Saved only on this phone.</small>
+      </label>
+
+      <fieldset>
+        <legend>Networks to scan</legend>
+        <div id="networkChecks" class="checks"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>My router's cell (optional)</legend>
+        <small>From your Rain router's admin page. Decimal or hex both work.</small>
+        <label class="field">Type
+          <select id="routerRadio">
+            <option value="LTE">4G / LTE</option>
+            <option value="NR">5G / NR</option>
+          </select>
+        </label>
+        <label class="field">TAC (tracking area)
+          <input id="routerLac" inputmode="text" autocomplete="off" />
+        </label>
+        <label class="field">Cell ID (ECI / NCI)
+          <input id="routerCell" inputmode="text" autocomplete="off" />
+        </label>
+      </fieldset>
+
+      <div id="settingsMsg" class="settings-msg"></div>
+
+      <div class="panel-buttons">
+        <button id="saveSettings" class="primary">SAVE &amp; SCAN</button>
+        <button id="closeSettings">CLOSE</button>
+      </div>
+      <button id="clearCache" class="link">Clear saved tower data</button>
+    </div>
+  </div>
+
+  <script src="app.js?v=5"></script>
 </body>
 </html>
