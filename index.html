@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=3" />
+  <link rel="stylesheet" href="styles.css?v=4" />
 </head>
 <body>
   <header class="hud">
@@ -14,12 +14,14 @@
 
   <main>
     <canvas id="radar"></canvas>
+    <button id="compassBtn" class="compass-btn" hidden>ENABLE COMPASS</button>
 
     <section class="target">
       <div class="label">NEAREST TARGET</div>
       <div id="targetName" class="name">—</div>
       <div id="targetDist" class="dist">—</div>
       <div id="targetBearing" class="bearing">—</div>
+      <div id="aim" class="aim"></div>
     </section>
 
     <section class="controls">
@@ -29,6 +31,6 @@
     </section>
   </main>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

@@ -65,3 +65,12 @@ main {
 }
 .controls button:active { background: var(--green-dim); }
 #rangeLabel { min-width: 70px; text-align: center; }
+
+.aim { margin-top: 10px; font-size: 20px; font-weight: bold; letter-spacing: 2px; color: #ffcc00; min-height: 1.4em; }
+.aim.on { color: var(--green); text-shadow: 0 0 12px var(--green); }
+.compass-btn {
+  padding: 12px 20px;
+  font-family: inherit; font-size: 14px; letter-spacing: 2px;
+  background: transparent; color: var(--green);
+  border: 2px solid var(--green); border-radius: 8px;
+}

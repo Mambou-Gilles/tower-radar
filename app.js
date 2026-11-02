@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 3: GPS + mock towers =====
+// ===== Tower Radar — Phase 4: GPS + compass + mock towers =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -37,13 +37,20 @@ buildMockTowers();
 // ===== GPS =====
 const statusEl = document.getElementById("status");
 let hasFix = false;
+let gpsStatus = "FINDING GPS…";
+let compassStatus = "";
+
+function renderStatus() {
+  statusEl.textContent = [gpsStatus, compassStatus, "MOCK"].filter(Boolean).join(" · ");
+}
 
 function startGPS() {
   if (!("geolocation" in navigator)) {
-    statusEl.textContent = "NO GPS · MOCK";
+    gpsStatus = "NO GPS";
+    renderStatus();
     return;
   }
-  statusEl.textContent = "FINDING GPS…";
+  renderStatus();
 
   navigator.geolocation.watchPosition(
     (pos) => {
@@ -56,11 +63,12 @@ function startGPS() {
         hasFix = true;
         buildMockTowers();
       }
-      statusEl.textContent = `GPS ±${Math.round(user.accuracy)} m · MOCK`;
+      gpsStatus = `GPS ±${Math.round(user.accuracy)} m`;
+      renderStatus();
     },
     (err) => {
-      statusEl.textContent =
-        err.code === err.PERMISSION_DENIED ? "GPS DENIED · MOCK" : "GPS ERROR · MOCK";
+      gpsStatus = err.code === err.PERMISSION_DENIED ? "GPS DENIED" : "GPS ERROR";
+      renderStatus();
     },
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
   );
@@ -101,6 +109,68 @@ function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`;
 }
 
+// ===== Compass =====
+// heading = direction the top of the phone points, in degrees (0 = North, clockwise)
+let heading = null;         // smoothed value used for drawing
+let smoothX = 0, smoothY = 0; // smoothing works on the circle, so 359° → 0° doesn't jump to 180°
+const SMOOTHING = 0.15;     // 0 = frozen, 1 = no smoothing
+
+function screenAngle() {
+  return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+}
+
+function onHeading(raw) {
+  raw = (raw + screenAngle() + 360) % 360;
+  const x = Math.cos(toRad(raw)), y = Math.sin(toRad(raw));
+  if (heading === null) { smoothX = x; smoothY = y; }
+  else {
+    smoothX += (x - smoothX) * SMOOTHING;
+    smoothY += (y - smoothY) * SMOOTHING;
+  }
+  heading = (toDeg(Math.atan2(smoothY, smoothX)) + 360) % 360;
+  if (compassStatus !== "COMPASS") { compassStatus = "COMPASS"; compassBtn.hidden = true; renderStatus(); }
+}
+
+function handleOrientation(e) {
+  if (typeof e.webkitCompassHeading === "number") {
+    onHeading(e.webkitCompassHeading);              // iPhone: already clockwise from North
+  } else if (e.absolute && typeof e.alpha === "number") {
+    onHeading(360 - e.alpha);                        // Android: alpha is counter-clockwise
+  }
+}
+
+const compassBtn = document.getElementById("compassBtn");
+let listening = false;
+
+function listenCompass() {
+  if (listening) return;
+  listening = true;
+  window.addEventListener("deviceorientationabsolute", handleOrientation);
+  window.addEventListener("deviceorientation", handleOrientation);
+}
+
+// 1) Try straight away — works on Android without any prompt
+listenCompass();
+
+// 2) If nothing arrives within 1.5 s, the browser wants permission (iPhone) or has no compass
+setTimeout(() => {
+  if (heading !== null) return;
+  if (typeof DeviceOrientationEvent !== "undefined" &&
+      typeof DeviceOrientationEvent.requestPermission === "function") {
+    compassBtn.hidden = false;
+  } else {
+    compassStatus = "NO COMPASS"; renderStatus();
+  }
+}, 1500);
+
+compassBtn.onclick = async () => {
+  try {
+    const res = await DeviceOrientationEvent.requestPermission();
+    if (res === "granted") { compassBtn.hidden = true; }
+    else { compassStatus = "COMPASS DENIED"; renderStatus(); }
+  } catch { compassStatus = "COMPASS ERROR"; renderStatus(); }
+};
+
 // ===== Canvas setup =====
 const canvas = document.getElementById("radar");
 const ctx = canvas.getContext("2d");
@@ -114,33 +184,53 @@ window.addEventListener("resize", resize);
 resize();
 
 let sweep = 0;
+const aimEl = document.getElementById("aim");
+
+// Screen position for a real-world bearing, after rotating by the heading
+function polar(c, r, worldBearing) {
+  const a = toRad(worldBearing - (heading || 0));
+  return [c + r * Math.sin(a), c - r * Math.cos(a)];
+}
 
 function draw() {
   const W = canvas.width;
   const c = W / 2;
   const R = c * 0.95;
+  const plotR = R - W / 30;
   const range = RANGES[rangeIndex];
+
+  ctx.clearRect(0, 0, W, W);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(c, c, R, 0, Math.PI * 2); ctx.clip(); // nothing spills outside
 
   // Background
   ctx.fillStyle = "#031a08";
-  ctx.beginPath(); ctx.arc(c, c, R, 0, Math.PI * 2); ctx.fill();
+  ctx.fillRect(0, 0, W, W);
 
-  // Grid rings + cross
+  // Grid rings
   ctx.strokeStyle = "rgba(57,255,106,0.35)";
   ctx.lineWidth = W / 400;
   for (let i = 1; i <= 4; i++) {
     ctx.beginPath(); ctx.arc(c, c, (R * i) / 4, 0, Math.PI * 2); ctx.stroke();
   }
+
+  // Cross lines along N-S and E-W (rotate with the world)
   ctx.beginPath();
-  ctx.moveTo(c - R, c); ctx.lineTo(c + R, c);
-  ctx.moveTo(c, c - R); ctx.lineTo(c, c + R);
+  for (const b of [0, 90]) {
+    const [x1, y1] = polar(c, R, b), [x2, y2] = polar(c, R, b + 180);
+    ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  }
   ctx.stroke();
 
-  // North marker (fixed for now; rotates with compass in Phase 4)
-  ctx.fillStyle = "#39ff6a";
-  ctx.font = `${W / 25}px Courier New`;
+  // N / E / S / W letters (text stays upright)
+  ctx.font = `bold ${W / 25}px Courier New`;
   ctx.textAlign = "center";
-  ctx.fillText("N", c, c - R + W / 20);
+  ctx.textBaseline = "middle";
+  [["N", 0], ["E", 90], ["S", 180], ["W", 270]].forEach(([label, b]) => {
+    const [x, y] = polar(c, R - W / 22, b);
+    ctx.fillStyle = label === "N" ? "#ff5555" : "#39ff6a";
+    ctx.fillText(label, x, y);
+  });
 
   // Sweep line with fading trail
   for (let i = 0; i < 30; i++) {
@@ -161,13 +251,7 @@ function draw() {
     if (!nearest || t.dist < nearest.dist) nearest = t;
     if (t.dist > range) continue;
 
-    // Keep the whole blip inside the circle
-    const plotR = R - W / 30;
-    const r = (t.dist / range) * plotR;
-    const a = toRad(t.bearing);
-    const x = c + r * Math.sin(a);
-    const y = c - r * Math.cos(a);
-
+    const [x, y] = polar(c, (t.dist / range) * plotR, t.bearing);
     ctx.fillStyle = NETWORKS[t.network].color;
     ctx.shadowColor = ctx.fillStyle;
     ctx.shadowBlur = W / 40;
@@ -175,21 +259,32 @@ function draw() {
     ctx.shadowBlur = 0;
   }
 
-  // Arrow to nearest tower
+  // Line to nearest tower
   if (nearest) {
-    const a = toRad(nearest.bearing);
-    const len = Math.min((nearest.dist / range) * (R - W / 30), R - W / 30);
+    const len = Math.min((nearest.dist / range) * plotR, plotR);
+    const [x, y] = polar(c, len, nearest.bearing);
     ctx.strokeStyle = "#ffffff";
     ctx.lineWidth = W / 150;
-    ctx.beginPath();
-    ctx.moveTo(c, c);
-    ctx.lineTo(c + len * Math.sin(a), c - len * Math.cos(a));
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
 
     document.getElementById("targetName").textContent = NETWORKS[nearest.network].name;
     document.getElementById("targetDist").textContent = formatDist(nearest.dist);
     document.getElementById("targetBearing").textContent =
       `${Math.round(nearest.bearing)}° ${compassPoint(nearest.bearing)}`;
+
+    // Aiming guidance: how far to turn, from -180 (left) to +180 (right)
+    if (heading !== null) {
+      const turn = ((nearest.bearing - heading + 540) % 360) - 180;
+      if (Math.abs(turn) <= 10) {
+        aimEl.textContent = "◎ ON TARGET";
+        aimEl.className = "aim on";
+      } else {
+        aimEl.textContent = `TURN ${turn > 0 ? "RIGHT" : "LEFT"} ${Math.round(Math.abs(turn))}°`;
+        aimEl.className = "aim";
+      }
+    } else {
+      aimEl.textContent = "";
+    }
   }
 
   // GPS accuracy circle
@@ -202,6 +297,19 @@ function draw() {
   // User dot
   ctx.fillStyle = "#39ff6a";
   ctx.beginPath(); ctx.arc(c, c, W / 50, 0, Math.PI * 2); ctx.fill();
+
+  ctx.restore();
+
+  // Fixed "facing" marker at the top (where the phone points)
+  if (heading !== null) {
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.moveTo(c, c - R + W / 70);
+    ctx.lineTo(c - W / 45, c - R - W / 70);
+    ctx.lineTo(c + W / 45, c - R - W / 70);
+    ctx.closePath();
+    ctx.fill();
+  }
 
   requestAnimationFrame(draw);
 }
