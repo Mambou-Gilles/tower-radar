@@ -38,6 +38,7 @@ The laptop must be on the router's WiFi.
 | Option | What it does |
 |---|---|
 | `--show` | Shows the browser window — use it if login fails, to watch what happens |
+| `--debug` | Prints every request the router page makes (for troubleshooting) |
 | `--csv myfile.csv` | Save to a different file (handy: one file per spot you test) |
 | `--url https://192.168.0.1` | Router address, if yours differs |
 

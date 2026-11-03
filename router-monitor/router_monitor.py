@@ -165,12 +165,13 @@ def print_summary(rows):
 
 # ---------- browser automation ----------
 def login(page, base_url, username, password):
+    """Returns 'ok', 'already' or an error message."""
     page.goto(base_url + "/", wait_until="domcontentloaded")
     pw_box = page.locator("input[type=password]").first
     try:
-        pw_box.wait_for(state="visible", timeout=8000)
+        pw_box.wait_for(state="visible", timeout=10000)
     except PWTimeout:
-        return True  # no password box -> probably still logged in
+        return "already"  # no password box -> still logged in
     # Fill a username box if the page has one
     user_box = page.locator("input[type=text]:visible, input:not([type]):visible").first
     if user_box.count() and not user_box.input_value():
@@ -179,15 +180,73 @@ def login(page, base_url, username, password):
     # Click a login button if we can find one, otherwise press Enter
     button = page.get_by_role("button", name=re.compile(r"log ?in|sign ?in", re.I)).first
     try:
-        with page.expect_response(lambda r: "action_login" in r.url, timeout=15000):
+        with page.expect_response(lambda r: "action_login" in r.url, timeout=15000) as info:
             if button.count():
                 button.click()
             else:
                 pw_box.press("Enter")
+        try:
+            reply = info.value.json()
+        except Exception:
+            reply = {}
     except PWTimeout:
-        pass
+        return "the login button didn't send anything (run with --show to watch)"
     page.wait_for_timeout(2500)
-    return page.locator("input[type=password]:visible").count() == 0
+    if isinstance(reply, dict) and reply.get("code") not in (0, "0", None):
+        return f"router refused the password (failed attempts: {reply.get('failcnt', '?')})"
+    return "ok"
+
+
+def click_text(page, pattern, timeout=4000):
+    """Click the first visible element whose text matches pattern. Returns True if clicked."""
+    loc = page.get_by_text(re.compile(pattern, re.I)).locator("visible=true").first
+    try:
+        loc.wait_for(state="visible", timeout=timeout)
+        loc.click()
+        page.wait_for_timeout(1200)
+        return True
+    except Exception:
+        return False
+
+
+def open_device_info(page, base_url, state, wait_s=10):
+    """Open the device info page and wait until signal data arrives. Returns True on success."""
+    def wait_for_data():
+        start = time.time()
+        while time.time() - start < wait_s:
+            page.wait_for_timeout(500)
+            if state["last_info"] >= start:
+                return True
+        return False
+
+    # Attempt 1: jump straight to the page address
+    page.goto(base_url + DEVICE_INFO_ROUTE)
+    if wait_for_data():
+        return True
+    # Attempt 2: reload the page at that address (some routers only start polling on a fresh load)
+    page.reload()
+    if wait_for_data():
+        return True
+    # Attempt 3: click through the menu like a person: advanced -> system -> device info
+    print(f"{DIM}  trying the menu: advanced > system > device info ...{RESET}")
+    click_text(page, r"^\s*advanced\s*$")
+    click_text(page, r"^\s*system\s*$", timeout=2500)
+    click_text(page, r"^\s*device info\s*$")
+    return wait_for_data()
+
+
+def save_debug(page, state):
+    shot = Path("router_debug.png").resolve()
+    try:
+        page.screenshot(path=str(shot), full_page=True)
+    except Exception:
+        shot = None
+    print(f"{YELLOW}No signal data yet.{RESET}")
+    print(f"  page address now: {page.url}")
+    flags = sorted(set(state["flags"]))
+    print(f"  requests seen   : {', '.join(flags) if flags else 'none'}")
+    if shot:
+        print(f"  screenshot saved: {shot}")
 
 
 def main():
@@ -196,6 +255,7 @@ def main():
     ap.add_argument("--user", default="admin", help="router username (default admin)")
     ap.add_argument("--csv", default="signal_log.csv", help="file to save readings to")
     ap.add_argument("--show", action="store_true", help="show the browser window (for troubleshooting)")
+    ap.add_argument("--debug", action="store_true", help="print every request the router page makes")
     args = ap.parse_args()
 
     password = os.environ.get("ROUTER_PASSWORD") or getpass.getpass("Router password (hidden as you type): ")
@@ -207,10 +267,15 @@ def main():
     if new_file:
         writer.writeheader()
 
-    state = {"cells": None, "rows": [], "towers": [], "last": time.time()}
+    state = {"cells": None, "rows": [], "towers": [], "last": time.time(), "last_info": 0, "flags": []}
 
     def on_response(resp):
         url = resp.url
+        m = re.search(r"[?&]flag=([^&]+)", url)
+        if m:
+            state["flags"] = (state["flags"] + [m.group(1)])[-60:]
+            if args.debug:
+                print(f"{DIM}  [{resp.status}] {m.group(1)}{RESET}")
         if "flag=get_device_info" not in url and "flag=cell" not in url:
             return
         try:
@@ -222,7 +287,10 @@ def main():
             return
         r = parse_device_info(body)
         if not r or r["sinr_db"] is None and r["rsrp_dbm"] is None:
+            if args.debug:
+                print(f"{DIM}  device info without signal values: {str(body)[:200]}{RESET}")
             return
+        state["last_info"] = time.time()
         cells = state["cells"]
         r["tac"] = cells["tac"] if cells else None
         r["timing_advance"] = cells["timing_advance"] if cells else None
@@ -242,23 +310,31 @@ def main():
         page = context.new_page()
         page.on("response", on_response)
 
-        if not login(page, args.url, args.user, password):
-            print(f"{RED}Login failed - check the password (run with --show to watch what happens).{RESET}")
+        result = login(page, args.url, args.user, password)
+        if result not in ("ok", "already"):
+            print(f"{RED}Login failed - {result}.{RESET}")
             browser.close()
             return 1
-        print(f"{GREEN}Logged in.{RESET} Reading signal every few seconds - press Ctrl + C to stop.")
+        print(f"{GREEN}Logged in.{RESET} Opening device info ...")
+        if not open_device_info(page, args.url, state):
+            save_debug(page, state)
+            print("  Send the screenshot and these lines to Claude. Still listening - press Ctrl + C to stop.")
+        else:
+            print(f"Reading signal every few seconds - press Ctrl + C to stop.")
         print(f"Saving to {csv_path.resolve()}\n")
-        page.goto(args.url + DEVICE_INFO_ROUTE)
         state["last"] = time.time()
 
         try:
             while True:
                 page.wait_for_timeout(1000)
-                if time.time() - state["last"] > 45:
+                if time.time() - state["last"] > 60:
                     # No data for a while: the router probably logged us out - log in again
-                    print(f"{YELLOW}No data for 45 s - logging in again...{RESET}")
-                    login(page, args.url, args.user, password)
-                    page.goto(args.url + DEVICE_INFO_ROUTE)
+                    print(f"{YELLOW}No data for 60 s - logging in again...{RESET}")
+                    result = login(page, args.url, args.user, password)
+                    if result not in ("ok", "already"):
+                        print(f"{RED}Login failed - {result}.{RESET}")
+                    elif not open_device_info(page, args.url, state):
+                        save_debug(page, state)
                     state["last"] = time.time()
         except KeyboardInterrupt:
             pass
