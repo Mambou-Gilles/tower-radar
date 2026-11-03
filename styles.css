@@ -166,3 +166,12 @@ main {
 
 .router-link { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 #sigRouterLink { align-self: flex-start; }
+
+.map-overlay { padding: 12px; }
+.map-panel { max-width: 560px; gap: 10px; }
+.pin-map { width: 100%; height: 58vh; min-height: 280px; border-radius: 8px; border: 1px solid var(--green-dim); background: #031a08; }
+.map-tools { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; }
+#mapInfo { color: var(--green); text-align: right; }
+.pin-icon { width: 26px; height: 26px; border-radius: 50%; background: #ff3cf0; border: 3px solid #fff; box-shadow: 0 0 10px #ff3cf0; }
+.you-icon { width: 18px; height: 18px; border-radius: 50%; background: #39ff6a; border: 3px solid #031a08; box-shadow: 0 0 8px #39ff6a; }
+.leaflet-container { font-family: inherit; }

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=14" />
 </head>
 <body>
   <header class="hud">
@@ -126,10 +126,17 @@
         <div id="tpAddress">Looking up…</div>
       </div>
       <div id="tpAdvice" class="sig-summary"></div>
-      <small>Position is estimated from phone reports and can be off by a few hundred metres.</small>
+      <small id="tpPosNote">Position is estimated from phone reports and can be off by a few hundred metres.</small>
       <fieldset>
-        <legend>Can you see this tower?</legend>
-        <small>Hold the phone flat, point its top straight at the real mast, then tap below.
+        <legend>Exact position</legend>
+        <small>Know where the mast really is? Drag a pin onto it on a satellite map — then directions
+          no longer depend on the database or on your phone's compass.</small>
+        <button id="tpPin" class="compass-btn">📍 PIN ON MAP</button>
+        <button id="tpUnpin" class="link" hidden>Remove my pin</button>
+      </fieldset>
+      <fieldset>
+        <legend id="tpSightLegend">Can you see this tower?</legend>
+        <small id="tpSightHelp">Hold the phone flat, point its top straight at the real mast, then tap below.
           The app will use that direction instead of the database estimate.</small>
         <button id="tpSight" class="compass-btn">👁 I'M POINTING AT IT</button>
         <div id="tpSightMsg" class="settings-msg"></div>
@@ -140,6 +147,22 @@
         <button id="tpClose">CLOSE</button>
       </div>
       <a id="tpMap" class="link" target="_blank" rel="noopener">Open in Google Maps ↗</a>
+    </div>
+  </div>
+
+  <div id="mapPanel" class="overlay map-overlay" hidden>
+    <div class="panel map-panel">
+      <h2>PIN THE MAST</h2>
+      <small>Drag the pink pin onto the mast (or tap the map where it is). Switch to satellite to spot it.</small>
+      <div id="pinMap" class="pin-map"></div>
+      <div class="map-tools">
+        <button id="mapLayer" class="link" type="button">Show street map</button>
+        <span id="mapInfo"></span>
+      </div>
+      <div class="panel-buttons">
+        <button id="mapSave" class="primary">SAVE PIN</button>
+        <button id="mapCancel">CANCEL</button>
+      </div>
     </div>
   </div>
 
@@ -191,6 +214,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

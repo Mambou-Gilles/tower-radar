@@ -192,7 +192,7 @@ function pickTarget() {
   for (const t of towers) {
     if (settings.target !== "any" && t.network !== settings.target) continue;
     if (!matchesRadio(t)) continue;
-    const d = distance(user.lat, user.lon, t.lat, t.lon);
+    const d = towerDistance(t);
     if (!best || d < best.d) best = { t, d };
   }
   return best && best.t;
@@ -202,7 +202,7 @@ function pickTarget() {
 function autoZoom() {
   const t = pickTarget();
   if (!t) return;
-  const d = distance(user.lat, user.lon, t.lat, t.lon) * 1.15;
+  const d = towerDistance(t) * 1.15;
   const i = RANGES.findIndex((r) => r >= d);
   rangeIndex = i === -1 ? RANGES.length - 1 : i;
   updateRangeLabel();
@@ -500,7 +500,7 @@ function renderCompare() {
     const mine = [...byKey.values()];
     const row = { id, n, scanned: settings.networks.includes(id) || mine.length > 0, cols: {}, within1: 0 };
     for (const t of mine) {
-      const d = distance(user.lat, user.lon, t.lat, t.lon);
+      const d = towerDistance(t);
       if (d <= 1000) row.within1++;
       if (!row.cols[t.radio] || d < row.cols[t.radio]) row.cols[t.radio] = d;
     }
@@ -585,7 +585,9 @@ function siteId(t) { return t.isRouter ? "router" : t.siteKey || `${t.network}-$
 
 function openTower(t) {
   panelSite = t;
-  const dist = distance(user.lat, user.lon, t.lat, t.lon);
+  const pos = sitePos(t);
+  const pinned = isPinned(t);
+  const dist = towerDistance(t);
   const brg = towerBearing(t);
   const cp = compassPoint(brg);
   const net = NETWORKS[t.network];
@@ -604,8 +606,8 @@ function openTower(t) {
     ["Network", net.name],
     ["Type", radioLabel(t.radio) || "unknown"],
     ["Distance", formatDist(dist)],
-    ["Direction", `${Math.round(brg)}° ${cp} (${POINT_WORDS[cp]})${isSighted(t) ? " — marked by you 👁" : ""}`],
-    ["Coordinates", `${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`],
+    ["Direction", `${Math.round(brg)}° ${cp} (${POINT_WORDS[cp]})${pinned ? " — from your pin 📍" : isSighted(t) ? " — marked by you 👁" : ""}`],
+    ["Coordinates", `${pos.lat.toFixed(5)}, ${pos.lon.toFixed(5)}${pinned ? " (pinned by you)" : ""}`],
     towerId && ["Tower ID", towerId],
     ["Cells", cells.length ? `${cells.length} recorded (${cellIds})` : "—"],
     lacs.length && ["TAC / LAC", lacs.join(", ")],
@@ -625,17 +627,29 @@ function openTower(t) {
     `(facing ${Math.round(brg)}° ${cp}), as high as possible. Walls, roofs and trees in that direction all weaken the signal.`;
 
   const map = document.getElementById("tpMap");
-  map.href = `https://www.google.com/maps/search/?api=1&query=${t.lat.toFixed(6)},${t.lon.toFixed(6)}`;
+  map.href = `https://www.google.com/maps/search/?api=1&query=${pos.lat.toFixed(6)},${pos.lon.toFixed(6)}`;
+  document.getElementById("tpPosNote").textContent = pinned
+    ? "Position pinned by you on the map — directions are calculated from GPS, not from the compass."
+    : "Position is estimated from phone reports and can be off by a few hundred metres.";
+  document.getElementById("tpPin").textContent = pinned ? "📍 MOVE MY PIN" : "📍 PIN ON MAP";
+  document.getElementById("tpUnpin").hidden = !pinned;
+  document.getElementById("tpSightLegend").textContent = pinned ? "Compass off? Fix it here" : "Can you see this tower?";
+  document.getElementById("tpSightHelp").textContent = pinned
+    ? "Hold the phone flat, away from metal (railings, router, magnetic cover), point its top at the mast, then tap. " +
+      "The app corrects your compass so ON TARGET matches what you see. Redo it when you move to another spot."
+    : "Hold the phone flat, point its top straight at the real mast, then tap below. " +
+      "The app will use that direction instead of the database estimate.";
+  document.getElementById("tpSight").textContent = pinned ? "🧭 I'M POINTING AT IT — FIX COMPASS" : "👁 I'M POINTING AT IT";
 
   const isLocked = lockedSite && siteId(lockedSite) === siteId(t);
   document.getElementById("tpAim").textContent = isLocked ? "UNLOCK" : "AIM AT THIS TOWER";
   document.getElementById("tpSightMsg").textContent = "";
-  document.getElementById("tpUnsight").hidden = !sightings[siteId(t)];
+  document.getElementById("tpUnsight").hidden = pinned || !sightings[siteId(t)];
 
   const addrEl = document.getElementById("tpAddress");
   addrEl.textContent = "Looking up…";
   const token = ++addrToken;
-  lookupAddress(t.lat, t.lon)
+  lookupAddress(pos.lat, pos.lon)
     .then((a) => { if (token === addrToken) addrEl.textContent = a; })
     .catch(() => { if (token === addrToken) addrEl.textContent = "Address lookup unavailable right now."; });
 
@@ -659,6 +673,18 @@ unlockBtn.onclick = () => setLock(null);
 document.getElementById("tpSight").onclick = () => {
   const msg = document.getElementById("tpSightMsg");
   if (heading === null) { msg.textContent = "Needs the compass — hold the phone flat and try again."; return; }
+  if (isPinned(panelSite)) {
+    // The mast's true direction is known from the pin, so the compass error is the difference
+    const truth = towerBearing(panelSite);
+    const err = ((truth - heading + 540) % 360) - 180;
+    let trim = (settings.compassTrim || 0) + err;
+    trim = ((trim + 540) % 360) - 180;
+    settings.compassTrim = Math.round(trim);
+    store.set("settings", settings);
+    msg.textContent = `Compass corrected by ${Math.round(Math.abs(err))}° ${err >= 0 ? "clockwise" : "anti-clockwise"} ` +
+      `(total correction now ${settings.compassTrim > 0 ? "+" : ""}${settings.compassTrim}° — see ⚙).`;
+    return;
+  }
   const before = Math.round(bearing(user.lat, user.lon, panelSite.lat, panelSite.lon));
   sightings[siteId(panelSite)] = { bearing: Math.round(heading), lat: user.lat, lon: user.lon, time: Date.now() };
   store.set("sightings", sightings);
@@ -675,6 +701,87 @@ document.getElementById("tpUnsight").onclick = () => {
   document.getElementById("tpSightMsg").textContent = "Back to the database position.";
 };
 
+
+
+// ===== Pin a mast on a satellite map (Leaflet, loaded only when needed) =====
+const LEAFLET_CSS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css";
+const LEAFLET_JS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js";
+let leafletReady = null, pinMap = null, pinMarker = null, youMarker = null, pinLine = null;
+let satLayer = null, streetLayer = null, onSatellite = true;
+const mapPanel = document.getElementById("mapPanel");
+
+function loadLeaflet() {
+  if (leafletReady) return leafletReady;
+  leafletReady = new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet"; css.href = LEAFLET_CSS;
+    document.head.append(css);
+    const js = document.createElement("script");
+    js.src = LEAFLET_JS; js.onload = resolve;
+    js.onerror = () => { leafletReady = null; reject(new Error("map library failed to load")); };
+    document.head.append(js);
+  });
+  return leafletReady;
+}
+
+function updatePinInfo() {
+  const p = pinMarker.getLatLng();
+  const d = distance(user.lat, user.lon, p.lat, p.lng), b = bearing(user.lat, user.lon, p.lat, p.lng);
+  document.getElementById("mapInfo").textContent = `${formatDist(d)} · ${Math.round(b)}° ${compassPoint(b)}`;
+  pinLine.setLatLngs([[user.lat, user.lon], [p.lat, p.lng]]);
+}
+
+async function openPinMap(t) {
+  mapPanel.hidden = false;
+  try { await loadLeaflet(); }
+  catch { document.getElementById("mapInfo").textContent = "Couldn't load the map — check your internet."; return; }
+  const L = window.L;
+  const start = sitePos(t);
+  if (!pinMap) {
+    pinMap = L.map("pinMap", { zoomControl: true, attributionControl: true });
+    satLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 19, attribution: "Imagery © Esri" });
+    streetLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { maxZoom: 19, attribution: "© OpenStreetMap" });
+    satLayer.addTo(pinMap);
+    youMarker = L.marker([user.lat, user.lon], { icon: L.divIcon({ className: "", html: '<div class="you-icon"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), interactive: false }).addTo(pinMap);
+    pinMarker = L.marker([start.lat, start.lon], { draggable: true, icon: L.divIcon({ className: "", html: '<div class="pin-icon"></div>', iconSize: [26, 26], iconAnchor: [13, 13] }) }).addTo(pinMap);
+    pinLine = L.polyline([], { color: "#ffffff", weight: 2, dashArray: "6 6" }).addTo(pinMap);
+    pinMarker.on("drag", updatePinInfo);
+    pinMap.on("click", (e) => { pinMarker.setLatLng(e.latlng); updatePinInfo(); });
+  }
+  youMarker.setLatLng([user.lat, user.lon]);
+  pinMarker.setLatLng([start.lat, start.lon]);
+  pinMap.invalidateSize();
+  pinMap.fitBounds(L.latLngBounds([[user.lat, user.lon], [start.lat, start.lon]]).pad(0.6), { maxZoom: 18 });
+  updatePinInfo();
+}
+
+document.getElementById("mapLayer").onclick = () => {
+  if (!pinMap) return;
+  onSatellite = !onSatellite;
+  pinMap.removeLayer(onSatellite ? streetLayer : satLayer);
+  (onSatellite ? satLayer : streetLayer).addTo(pinMap);
+  document.getElementById("mapLayer").textContent = onSatellite ? "Show street map" : "Show satellite";
+};
+document.getElementById("mapCancel").onclick = () => { mapPanel.hidden = true; };
+document.getElementById("mapSave").onclick = () => {
+  if (!pinMarker) return;
+  const p = pinMarker.getLatLng();
+  pins[siteId(panelSite)] = { lat: p.lat, lon: p.lng, time: Date.now() };
+  store.set("pins", pins);
+  mapPanel.hidden = true;
+  openTower(panelSite);
+  document.getElementById("tpSightMsg").textContent =
+    "Pin saved. Now point the phone at the mast and tap the compass button below to check your compass.";
+};
+document.getElementById("tpPin").onclick = () => openPinMap(panelSite);
+document.getElementById("tpUnpin").onclick = () => {
+  delete pins[siteId(panelSite)];
+  store.set("pins", pins);
+  openTower(panelSite);
+  document.getElementById("tpSightMsg").textContent = "Pin removed.";
+};
 
 // Tap on the radar → nearest blip within reach
 document.getElementById("radar").addEventListener("click", (e) => {
@@ -815,12 +922,23 @@ function compassCorrection() {
 let sightings = store.get("sightings", {});      // siteId → {bearing, lat, lon, time}
 const SIGHTING_VALID_M = 150;                    // a marked direction only holds near where it was taken
 
+// ===== Pinned towers: exact mast positions you placed on a satellite map =====
+let pins = store.get("pins", {});                // siteId → {lat, lon, time}
+
+function isPinned(t) { return !!pins[siteId(t)]; }
+function sitePos(t) { return pins[siteId(t)] || { lat: t.lat, lon: t.lon }; }
+function towerDistance(t) { const p = sitePos(t); return distance(user.lat, user.lon, p.lat, p.lon); }
+
+// Direction priority: pinned position (most reliable) > marked direction > database estimate
 function towerBearing(t) {
+  const p = pins[siteId(t)];
+  if (p) return bearing(user.lat, user.lon, p.lat, p.lon);
   const s = sightings[siteId(t)];
   if (s && distance(user.lat, user.lon, s.lat, s.lon) <= SIGHTING_VALID_M) return s.bearing;
   return bearing(user.lat, user.lon, t.lat, t.lon);
 }
 function isSighted(t) {
+  if (isPinned(t)) return false;
   const s = sightings[siteId(t)];
   return !!(s && distance(user.lat, user.lon, s.lat, s.lon) <= SIGHTING_VALID_M);
 }
@@ -964,7 +1082,7 @@ function draw() {
   const focus = focusNetwork();
   let nearest = null;
   for (const t of towers) {
-    t.dist = distance(user.lat, user.lon, t.lat, t.lon);
+    t.dist = towerDistance(t);
     t.bearing = towerBearing(t);
     if ((settings.target === "any" || t.network === settings.target) && matchesRadio(t)) {
       if (!nearest || t.dist < nearest.dist) nearest = t;
@@ -988,7 +1106,7 @@ function draw() {
 
   // Router's own cell: bigger blip with a ring
   if (routerCell) {
-    routerCell.dist = distance(user.lat, user.lon, routerCell.lat, routerCell.lon);
+    routerCell.dist = towerDistance(routerCell);
     routerCell.bearing = towerBearing(routerCell);
     if (settings.target === "router") nearest = routerCell;
     if (routerCell.dist <= range) {
@@ -1022,7 +1140,7 @@ function draw() {
   }
 
   if (lockedSite) {
-    lockedSite.dist = distance(user.lat, user.lon, lockedSite.lat, lockedSite.lon);
+    lockedSite.dist = towerDistance(lockedSite);
     lockedSite.bearing = towerBearing(lockedSite);
     nearest = lockedSite;
   }
