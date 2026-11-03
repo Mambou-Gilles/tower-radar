@@ -660,15 +660,16 @@ document.getElementById("tpSight").onclick = () => {
   sightings[siteId(panelSite)] = { bearing: Math.round(heading), lat: user.lat, lon: user.lon, time: Date.now() };
   store.set("sightings", sightings);
   const diff = ((Math.round(heading) - before + 540) % 360) - 180;
-  msg.textContent = `Saved: ${Math.round(heading)}° ${compassPoint(heading)} ` +
+  const text = `Saved: ${Math.round(heading)}° ${compassPoint(heading)} ` +
     `(database said ${before}°, ${Math.abs(diff)}° ${diff >= 0 ? "to the right" : "to the left"}).`;
-  document.getElementById("tpUnsight").hidden = false;
+  openTower(panelSite);                       // refresh direction + advice with the marked bearing
+  document.getElementById("tpSightMsg").textContent = text;
 };
 document.getElementById("tpUnsight").onclick = () => {
   delete sightings[siteId(panelSite)];
   store.set("sightings", sightings);
+  openTower(panelSite);
   document.getElementById("tpSightMsg").textContent = "Back to the database position.";
-  document.getElementById("tpUnsight").hidden = true;
 };
 
 
