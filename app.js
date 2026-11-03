@@ -42,7 +42,7 @@ const store = {
 };
 
 const settings = Object.assign(
-  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", radio: "all", compassTrim: 0, router: { radio: "LTE", lac: "", cellid: "" } },
+  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", radio: "all", compassTrim: 0, routerUrl: "https://192.168.0.1", router: { radio: "LTE", lac: "", cellid: "" } },
   store.get("settings", {})
 );
 
@@ -302,6 +302,7 @@ function fillSettings() {
   document.getElementById("routerLac").value = settings.router.lac;
   document.getElementById("routerCell").value = settings.router.cellid;
   document.getElementById("compassTrim").value = settings.compassTrim || 0;
+  document.getElementById("routerUrl").value = settings.routerUrl;
   renderDeclination();
   settingsMsg.textContent = settings.apiKey ? "" : "Paste your token to use real tower data.";
 }
@@ -312,6 +313,8 @@ document.getElementById("closeSettings").onclick = () => { panel.hidden = true; 
 document.getElementById("saveSettings").onclick = async () => {
   settings.apiKey = document.getElementById("apiKey").value.trim();
   settings.networks = [...document.querySelectorAll("#networkChecks input:checked")].map((cb) => cb.value);
+  settings.routerUrl = cleanRouterUrl(document.getElementById("routerUrl").value);
+  updateRouterLinks();
   settings.compassTrim = Math.max(-45, Math.min(45, Number(document.getElementById("compassTrim").value) || 0));
   settings.router = {
     radio: document.getElementById("routerRadio").value,
@@ -686,6 +689,21 @@ document.getElementById("radar").addEventListener("click", (e) => {
   }
   if (best) openTower(best.t);
 });
+
+// ===== Router shortcut: opens the router's own device info page =====
+// (A website can't read the router itself - browsers block that - so we open the router's page.)
+function cleanRouterUrl(v) {
+  v = String(v || "").trim().replace(/\/+$/, "");
+  if (!v) return "https://192.168.0.1";
+  if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+  return v;
+}
+function updateRouterLinks() {
+  const url = `${cleanRouterUrl(settings.routerUrl)}/#/advancedSet/eqMsg`;
+  document.getElementById("routerLink").href = url;
+  document.getElementById("sigRouterLink").href = url;
+}
+updateRouterLinks();
 
 // ===== GPS =====
 const statusEl = document.getElementById("status");

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=12" />
+  <link rel="stylesheet" href="styles.css?v=13" />
 </head>
 <body>
   <header class="hud">
@@ -55,6 +55,7 @@
     <div class="bottom-buttons">
       <button id="openSignal" class="compass-btn">📶 SIGNAL TEST</button>
       <button id="openCompare" class="compass-btn">📊 COMPARE</button>
+      <a id="routerLink" class="compass-btn router-link" target="_blank" rel="noopener">📡 ROUTER SIGNAL</a>
     </div>
   </main>
 
@@ -70,6 +71,14 @@
       <fieldset>
         <legend>Networks to scan</legend>
         <div id="networkChecks" class="checks"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Router</legend>
+        <label class="field">Router address
+          <input id="routerUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://192.168.0.1" />
+        </label>
+        <small>Used by 📡 ROUTER SIGNAL. Works only on your home WiFi.</small>
       </fieldset>
 
       <fieldset>
@@ -153,6 +162,7 @@
       <h2>SIGNAL TEST</h2>
       <small>Hold the phone at the window with its top pointing outward — the way the router would face.
         Move the router there, wait about a minute, then read SINR from its device info page.</small>
+      <a id="sigRouterLink" class="link" target="_blank" rel="noopener">📡 Open the router's signal page ↗</a>
       <div class="facing">FACING <span id="facingNow">—</span></div>
 
       <label class="field">Spot name (optional)
@@ -181,6 +191,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

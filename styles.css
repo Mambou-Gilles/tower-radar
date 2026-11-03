@@ -163,3 +163,6 @@ main {
 .tp-address { border: 1px solid var(--green-dim); border-radius: 8px; padding: 10px 12px; }
 .tp-address div { margin-top: 4px; font-size: 15px; color: var(--green); }
 #unlockBtn { margin-top: 8px; color: #ffcc00; }
+
+.router-link { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+#sigRouterLink { align-self: flex-start; }
