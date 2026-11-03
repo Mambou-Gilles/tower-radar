@@ -177,24 +177,61 @@ def login(page, base_url, username, password):
     if user_box.count() and not user_box.input_value():
         user_box.fill(username)
     pw_box.fill(password)
-    # Click a login button if we can find one, otherwise press Enter
-    button = page.get_by_role("button", name=re.compile(r"log ?in|sign ?in", re.I)).first
-    try:
-        with page.expect_response(lambda r: "action_login" in r.url, timeout=15000) as info:
-            if button.count():
-                button.click()
-            else:
-                pw_box.press("Enter")
+
+    # Try several ways to submit, stopping as soon as the router receives a login request
+    attempts = [
+        ("login button", lambda: page.get_by_role("button", name=re.compile(r"log ?in|sign ?in", re.I)).first.click(timeout=3000)),
+        ("login text", lambda: page.get_by_text(re.compile(r"^\s*(log ?in|sign ?in|login)\s*$", re.I)).locator("visible=true").first.click(timeout=3000)),
+        ("submit input", lambda: page.locator("input[type=submit]:visible, input[type=button]:visible").first.click(timeout=3000)),
+        ("any button", lambda: page.locator("button:visible").last.click(timeout=3000)),
+        ("Enter key", lambda: pw_box.press("Enter")),
+    ]
+    reply = None
+    for name, action in attempts:
         try:
-            reply = info.value.json()
+            with page.expect_response(lambda r: "action_login" in r.url, timeout=6000) as info:
+                action()
+            try:
+                reply = info.value.json()
+            except Exception:
+                reply = {}
+            break
         except Exception:
-            reply = {}
-    except PWTimeout:
-        return "the login button didn't send anything (run with --show to watch)"
+            continue
+    if reply is None:
+        save_login_debug(page)
+        return "couldn't find how to submit the login form (details saved - see above)"
     page.wait_for_timeout(2500)
     if isinstance(reply, dict) and reply.get("code") not in (0, "0", None):
         return f"router refused the password (failed attempts: {reply.get('failcnt', '?')})"
     return "ok"
+
+
+def save_login_debug(page):
+    """Save a picture and a description of the login page, so the form can be understood."""
+    shot, info = Path("login_debug.png").resolve(), Path("login_debug.txt").resolve()
+    try:
+        page.screenshot(path=str(shot), full_page=True)
+    except Exception:
+        pass
+    try:
+        desc = page.evaluate("""() => {
+          const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+          const out = [];
+          document.querySelectorAll('input, button, a, [role=button], [onclick], .btn, [class*=login], [class*=Login]').forEach(e => {
+            if (!vis(e)) return;
+            out.push([e.tagName.toLowerCase(), 'type=' + (e.type || ''), 'id=' + (e.id || ''),
+                      'class=' + (typeof e.className === 'string' ? e.className : ''),
+                      'placeholder=' + (e.placeholder || ''), 'text=' + (e.tagName === 'INPUT' ? (['button', 'submit'].includes(e.type) ? e.value : '') : (e.innerText || '')).trim().slice(0, 40)].join('  '));
+          });
+          const NL = String.fromCharCode(10);
+          return location.href + NL + out.join(NL);
+        }""")
+        # never write the typed password into the file
+        info.write_text(desc, encoding="utf-8")
+    except Exception as e:
+        info.write_text(f"could not describe page: {e}", encoding="utf-8")
+    print(f"{YELLOW}  Saved {shot.name} and {info.name} in this folder - send both to Claude.{RESET}")
 
 
 def click_text(page, pattern, timeout=4000):
