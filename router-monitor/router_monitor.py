@@ -164,20 +164,31 @@ def print_summary(rows):
 
 
 # ---------- browser automation ----------
-def login(page, base_url, username, password):
+def real_box(page, kind):
+    """The router page has hidden decoy boxes first; the real ones carry the el-input__inner style."""
+    styled = page.locator(f"input.el-input__inner[type={kind}]")
+    if styled.count():
+        return styled.last if kind == "password" else styled.first
+    return page.locator(f"input[type={kind}]:visible").last
+
+
+def login(page, base_url, username, password, navigate=True):
     """Returns 'ok', 'already' or an error message."""
-    page.goto(base_url + "/", wait_until="domcontentloaded")
-    pw_box = page.locator("input[type=password]").first
+    if navigate and "#/login" not in page.url:
+        page.goto(base_url + "/", wait_until="domcontentloaded")
     try:
-        pw_box.wait_for(state="visible", timeout=10000)
+        page.locator("input[type=password]").first.wait_for(state="attached", timeout=10000)
     except PWTimeout:
         return "already"  # no password box -> still logged in
-    # Fill a username box if the page has one
-    user_box = page.locator("input[type=text]:visible, input:not([type]):visible").first
+    page.wait_for_timeout(800)
+    if "#/login" not in page.url and not page.locator("input.el-input__inner[type=password]").count():
+        return "already"
+    pw_box = real_box(page, "password")
+    user_box = real_box(page, "text")
     if user_box.count() and not user_box.input_value():
         user_box.fill(username)
+    pw_box.click()
     pw_box.fill(password)
-
     # Try several ways to submit, stopping as soon as the router receives a login request
     attempts = [
         ("login button", lambda: page.get_by_role("button", name=re.compile(r"log ?in|sign ?in", re.I)).first.click(timeout=3000)),
@@ -256,15 +267,22 @@ def open_device_info(page, base_url, state, wait_s=10):
                 return True
         return False
 
-    # Attempt 1: jump straight to the page address
-    page.goto(base_url + DEVICE_INFO_ROUTE)
+    def go_inside_page():
+        # Change only the part after '#', exactly like the page's own menu does - no reload
+        page.evaluate("route => { location.hash = route }", DEVICE_INFO_ROUTE.split("#", 1)[1])
+
+    # Attempt 1: switch to the device info screen inside the page
+    go_inside_page()
     if wait_for_data():
         return True
-    # Attempt 2: reload the page at that address (some routers only start polling on a fresh load)
-    page.reload()
-    if wait_for_data():
-        return True
-    # Attempt 3: click through the menu like a person: advanced -> system -> device info
+    # If the router sent us back to its login screen, log in right there (it then returns to device info)
+    if "#/login" in page.url:
+        print(f"{DIM}  the router asked to log in again ...{RESET}")
+        if login(page, base_url, state["user"], state["password"], navigate=False) in ("ok", "already"):
+            go_inside_page()
+            if wait_for_data():
+                return True
+    # Attempt 2: click through the menu like a person: advanced -> system -> device info
     print(f"{DIM}  trying the menu: advanced > system > device info ...{RESET}")
     click_text(page, r"^\s*advanced\s*$")
     click_text(page, r"^\s*system\s*$", timeout=2500)
@@ -304,7 +322,8 @@ def main():
     if new_file:
         writer.writeheader()
 
-    state = {"cells": None, "rows": [], "towers": [], "last": time.time(), "last_info": 0, "flags": []}
+    state = {"cells": None, "rows": [], "towers": [], "last": time.time(), "last_info": 0, "flags": [],
+             "user": args.user, "password": password}
 
     def on_response(resp):
         url = resp.url
