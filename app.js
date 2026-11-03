@@ -1,4 +1,4 @@
-// ===== Tower Radar — Phase 7: tap a tower for details, lock target =====
+// ===== Tower Radar — Phase 7b: true-north compass correction, sighted towers =====
 
 // --- Network colours (MCC 655) ---
 const NETWORKS = {
@@ -42,7 +42,7 @@ const store = {
 };
 
 const settings = Object.assign(
-  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", radio: "all", router: { radio: "LTE", lac: "", cellid: "" } },
+  { apiKey: "", networks: Object.keys(NETWORKS), target: "rain", radio: "all", compassTrim: 0, router: { radio: "LTE", lac: "", cellid: "" } },
   store.get("settings", {})
 );
 
@@ -288,12 +288,21 @@ document.getElementById("networkChecks").innerHTML = Object.entries(NETWORKS).ma
   `<label><input type="checkbox" value="${id}"><span class="dot" style="background:${n.color}"></span>${n.name}</label>`
 ).join("");
 
+function renderDeclination() {
+  const d = declinationAt(user.lat, user.lon);
+  document.getElementById("declInfo").textContent = d === null
+    ? "Outside the built-in map (South Africa) — use fine-tune if directions look off."
+    : `Auto: ${Math.abs(d).toFixed(1)}° ${d < 0 ? "west" : "east"} (magnetic vs true north) — applied automatically.`;
+}
+
 function fillSettings() {
   document.getElementById("apiKey").value = settings.apiKey;
   document.querySelectorAll("#networkChecks input").forEach((cb) => { cb.checked = settings.networks.includes(cb.value); });
   document.getElementById("routerRadio").value = settings.router.radio;
   document.getElementById("routerLac").value = settings.router.lac;
   document.getElementById("routerCell").value = settings.router.cellid;
+  document.getElementById("compassTrim").value = settings.compassTrim || 0;
+  renderDeclination();
   settingsMsg.textContent = settings.apiKey ? "" : "Paste your token to use real tower data.";
 }
 
@@ -303,6 +312,7 @@ document.getElementById("closeSettings").onclick = () => { panel.hidden = true; 
 document.getElementById("saveSettings").onclick = async () => {
   settings.apiKey = document.getElementById("apiKey").value.trim();
   settings.networks = [...document.querySelectorAll("#networkChecks input:checked")].map((cb) => cb.value);
+  settings.compassTrim = Math.max(-45, Math.min(45, Number(document.getElementById("compassTrim").value) || 0));
   settings.router = {
     radio: document.getElementById("routerRadio").value,
     lac: document.getElementById("routerLac").value.trim(),
@@ -573,7 +583,7 @@ function siteId(t) { return t.isRouter ? "router" : t.siteKey || `${t.network}-$
 function openTower(t) {
   panelSite = t;
   const dist = distance(user.lat, user.lon, t.lat, t.lon);
-  const brg = bearing(user.lat, user.lon, t.lat, t.lon);
+  const brg = towerBearing(t);
   const cp = compassPoint(brg);
   const net = NETWORKS[t.network];
 
@@ -591,7 +601,7 @@ function openTower(t) {
     ["Network", net.name],
     ["Type", radioLabel(t.radio) || "unknown"],
     ["Distance", formatDist(dist)],
-    ["Direction", `${Math.round(brg)}° ${cp} (${POINT_WORDS[cp]})`],
+    ["Direction", `${Math.round(brg)}° ${cp} (${POINT_WORDS[cp]})${isSighted(t) ? " — marked by you 👁" : ""}`],
     ["Coordinates", `${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`],
     towerId && ["Tower ID", towerId],
     ["Cells", cells.length ? `${cells.length} recorded (${cellIds})` : "—"],
@@ -616,6 +626,8 @@ function openTower(t) {
 
   const isLocked = lockedSite && siteId(lockedSite) === siteId(t);
   document.getElementById("tpAim").textContent = isLocked ? "UNLOCK" : "AIM AT THIS TOWER";
+  document.getElementById("tpSightMsg").textContent = "";
+  document.getElementById("tpUnsight").hidden = !sightings[siteId(t)];
 
   const addrEl = document.getElementById("tpAddress");
   addrEl.textContent = "Looking up…";
@@ -639,6 +651,26 @@ document.getElementById("tpAim").onclick = () => {
   towerPanel.hidden = true;
 };
 unlockBtn.onclick = () => setLock(null);
+
+// "I can see this tower": store the direction the phone points right now
+document.getElementById("tpSight").onclick = () => {
+  const msg = document.getElementById("tpSightMsg");
+  if (heading === null) { msg.textContent = "Needs the compass — hold the phone flat and try again."; return; }
+  const before = Math.round(bearing(user.lat, user.lon, panelSite.lat, panelSite.lon));
+  sightings[siteId(panelSite)] = { bearing: Math.round(heading), lat: user.lat, lon: user.lon, time: Date.now() };
+  store.set("sightings", sightings);
+  const diff = ((Math.round(heading) - before + 540) % 360) - 180;
+  msg.textContent = `Saved: ${Math.round(heading)}° ${compassPoint(heading)} ` +
+    `(database said ${before}°, ${Math.abs(diff)}° ${diff >= 0 ? "to the right" : "to the left"}).`;
+  document.getElementById("tpUnsight").hidden = false;
+};
+document.getElementById("tpUnsight").onclick = () => {
+  delete sightings[siteId(panelSite)];
+  store.set("sightings", sightings);
+  document.getElementById("tpSightMsg").textContent = "Back to the database position.";
+  document.getElementById("tpUnsight").hidden = true;
+};
+
 
 // Tap on the radar → nearest blip within reach
 document.getElementById("radar").addEventListener("click", (e) => {
@@ -730,6 +762,50 @@ function formatDist(m) {
   return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`;
 }
 
+// ===== Magnetic declination (true north vs magnetic north) =====
+// Phone compasses point to MAGNETIC north; tower bearings are from TRUE north.
+// Values from the World Magnetic Model (WMM2025) for late 2026, every 2° over South Africa.
+// Negative = magnetic north lies west of true north.
+const DECL_LAT0 = -36, DECL_LON0 = 16, DECL_STEP = 2;
+const DECL_GRID = [
+  [-27.3, -28.4, -29.5, -30.6, -31.8, -32.9, -34.0, -35.1, -36.1],  // -36°
+  [-25.7, -26.7, -27.7, -28.8, -29.8, -30.9, -31.9, -32.9, -33.8],  // -34°
+  [-23.8, -24.7, -25.6, -26.5, -27.5, -28.5, -29.5, -30.4, -31.3],  // -32°
+  [-21.7, -22.4, -23.2, -24.0, -24.9, -25.8, -26.7, -27.6, -28.4],  // -30°
+  [-19.3, -19.9, -20.5, -21.2, -22.0, -22.8, -23.7, -24.5, -25.3],  // -28°
+  [-16.8, -17.2, -17.7, -18.3, -19.0, -19.7, -20.5, -21.3, -22.1],  // -26°
+  [-14.3, -14.6, -14.9, -15.4, -16.0, -16.6, -17.4, -18.1, -18.9],  // -24°
+  [-12.0, -12.1, -12.3, -12.6, -13.1, -13.7, -14.3, -15.0, -15.7],  // -22°
+];
+
+// Bilinear interpolation; null outside the table (then only the manual trim applies)
+function declinationAt(lat, lon) {
+  const fi = (lat - DECL_LAT0) / DECL_STEP, fj = (lon - DECL_LON0) / DECL_STEP;
+  if (fi < 0 || fj < 0 || fi > DECL_GRID.length - 1 || fj > DECL_GRID[0].length - 1) return null;
+  const i = Math.min(Math.floor(fi), DECL_GRID.length - 2), j = Math.min(Math.floor(fj), DECL_GRID[0].length - 2);
+  const a = fi - i, b = fj - j, g = DECL_GRID;
+  return (1 - a) * ((1 - b) * g[i][j] + b * g[i][j + 1]) + a * ((1 - b) * g[i + 1][j] + b * g[i + 1][j + 1]);
+}
+
+// Total correction added to the raw compass reading
+function compassCorrection() {
+  return (declinationAt(user.lat, user.lon) || 0) + (settings.compassTrim || 0);
+}
+
+// ===== Sighted towers: real directions you marked by pointing at a visible mast =====
+let sightings = store.get("sightings", {});      // siteId → {bearing, lat, lon, time}
+const SIGHTING_VALID_M = 150;                    // a marked direction only holds near where it was taken
+
+function towerBearing(t) {
+  const s = sightings[siteId(t)];
+  if (s && distance(user.lat, user.lon, s.lat, s.lon) <= SIGHTING_VALID_M) return s.bearing;
+  return bearing(user.lat, user.lon, t.lat, t.lon);
+}
+function isSighted(t) {
+  const s = sightings[siteId(t)];
+  return !!(s && distance(user.lat, user.lon, s.lat, s.lon) <= SIGHTING_VALID_M);
+}
+
 // ===== Compass =====
 // heading = direction the top of the phone points, in degrees (0 = North, clockwise)
 let heading = null;         // smoothed value used for drawing
@@ -748,7 +824,7 @@ function onHeading(raw) {
     smoothX += (x - smoothX) * SMOOTHING;
     smoothY += (y - smoothY) * SMOOTHING;
   }
-  heading = (toDeg(Math.atan2(smoothY, smoothX)) + 360) % 360;
+  heading = (toDeg(Math.atan2(smoothY, smoothX)) + compassCorrection() + 720) % 360;   // true heading
   if (compassStatus !== "COMPASS") { compassStatus = "COMPASS"; compassBtn.hidden = true; renderStatus(); }
 }
 
@@ -870,7 +946,7 @@ function draw() {
   let nearest = null;
   for (const t of towers) {
     t.dist = distance(user.lat, user.lon, t.lat, t.lon);
-    t.bearing = bearing(user.lat, user.lon, t.lat, t.lon);
+    t.bearing = towerBearing(t);
     if ((settings.target === "any" || t.network === settings.target) && matchesRadio(t)) {
       if (!nearest || t.dist < nearest.dist) nearest = t;
     }
@@ -894,7 +970,7 @@ function draw() {
   // Router's own cell: bigger blip with a ring
   if (routerCell) {
     routerCell.dist = distance(user.lat, user.lon, routerCell.lat, routerCell.lon);
-    routerCell.bearing = bearing(user.lat, user.lon, routerCell.lat, routerCell.lon);
+    routerCell.bearing = towerBearing(routerCell);
     if (settings.target === "router") nearest = routerCell;
     if (routerCell.dist <= range) {
       const [x, y] = polar(c, (routerCell.dist / range) * plotR, routerCell.bearing);
@@ -928,7 +1004,7 @@ function draw() {
 
   if (lockedSite) {
     lockedSite.dist = distance(user.lat, user.lon, lockedSite.lat, lockedSite.lon);
-    lockedSite.bearing = bearing(user.lat, user.lon, lockedSite.lat, lockedSite.lon);
+    lockedSite.bearing = towerBearing(lockedSite);
     nearest = lockedSite;
   }
 

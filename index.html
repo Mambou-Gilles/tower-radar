@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Tower Radar</title>
-  <link rel="stylesheet" href="styles.css?v=10" />
+  <link rel="stylesheet" href="styles.css?v=11" />
 </head>
 <body>
   <header class="hud">
@@ -73,6 +73,15 @@
       </fieldset>
 
       <fieldset>
+        <legend>Compass correction</legend>
+        <small id="declInfo"></small>
+        <label class="field">Fine-tune (degrees, + turns the radar clockwise)
+          <input id="compassTrim" type="number" inputmode="numeric" step="1" min="-45" max="45" />
+        </label>
+        <small>Leave at 0 unless a tower you can see is still consistently off.</small>
+      </fieldset>
+
+      <fieldset>
         <legend>My router's cell (optional)</legend>
         <small>From your Rain router's admin page. Decimal or hex both work.</small>
         <label class="field">Type
@@ -109,6 +118,14 @@
       </div>
       <div id="tpAdvice" class="sig-summary"></div>
       <small>Position is estimated from phone reports and can be off by a few hundred metres.</small>
+      <fieldset>
+        <legend>Can you see this tower?</legend>
+        <small>Hold the phone flat, point its top straight at the real mast, then tap below.
+          The app will use that direction instead of the database estimate.</small>
+        <button id="tpSight" class="compass-btn">👁 I'M POINTING AT IT</button>
+        <div id="tpSightMsg" class="settings-msg"></div>
+        <button id="tpUnsight" class="link" hidden>Forget my marked direction</button>
+      </fieldset>
       <div class="panel-buttons">
         <button id="tpAim" class="primary">AIM AT THIS TOWER</button>
         <button id="tpClose">CLOSE</button>
@@ -164,6 +181,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>
