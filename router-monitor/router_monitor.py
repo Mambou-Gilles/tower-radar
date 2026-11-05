@@ -7,6 +7,8 @@ How it works, in plain English:
   3. Opens "device info". That page asks the router for fresh values every few
      seconds - this program simply listens to those answers.
   4. Prints a live line per reading and saves everything to a CSV file.
+  5. Every 5 seconds it also checks that the INTERNET works (not just the signal),
+     and records every outage in outages.csv - proof for Rain support.
 
 Run:   python router_monitor.py
 Stop:  Ctrl + C
@@ -18,7 +20,9 @@ import getpass
 import json
 import os
 import re
+import socket
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -31,8 +35,15 @@ CSV_FIELDS = [
     "time", "network", "band", "pci", "tower_id", "cell_id", "tac",
     "sinr_db", "ssb_sinr_db", "rsrp_dbm", "ssb_rsrp_dbm", "rsrq_db", "rssi_dbm",
     "cqi", "rank", "dl_modulation", "ul_modulation", "tx_power_dbm", "timing_advance",
-    "neighbours",
+    "neighbours", "internet_ok", "latency_ms",
 ]
+OUTAGE_FIELDS = ["start", "end", "duration_s", "sinr_db_at_start", "rsrp_dbm_at_start", "tower_id", "pci", "router_status"]
+# Big, always-on internet services, reached by IP address (so a DNS problem can't fool the test)
+NET_TARGETS = [("1.1.1.1", 443), ("8.8.8.8", 443), ("9.9.9.9", 443)]
+if os.environ.get("RM_NET_TARGETS"):    # for testing only: "host:port,host:port"
+    NET_TARGETS = [(h, int(p)) for h, p in (t.rsplit(":", 1) for t in os.environ["RM_NET_TARGETS"].split(","))]
+NET_EVERY_S = float(os.environ.get("RM_NET_EVERY", 5))
+SLOW_MS = 300
 
 # Make Windows terminals show colours and the ° symbol properly
 if os.name == "nt":
@@ -125,8 +136,104 @@ def parse_cells(body):
     return None
 
 
+
+# ---------- internet checker ----------
+def fmt_duration(sec):
+    sec = int(round(sec))
+    return f"{sec // 60}m {sec % 60:02d}s" if sec >= 60 else f"{sec}s"
+
+
+class InternetChecker(threading.Thread):
+    """Every few seconds, try to reach big internet services. Two failures in a row = outage."""
+
+    def __init__(self, state, outage_writer, outage_file):
+        super().__init__(daemon=True)
+        self.state, self.writer, self.file = state, outage_writer, outage_file
+        self.ok, self.latency_ms = None, None
+        self.fails_in_row = 0
+        self.down_since = None
+        self.down_snapshot = {}
+        self.checks = self.failed = self.slow = 0
+        self.latencies = []
+        self.outages = []          # (start, end, seconds, sinr)
+        self.stop_flag = threading.Event()
+
+    @staticmethod
+    def probe():
+        best = None
+        for host, port in NET_TARGETS:
+            t0 = time.perf_counter()
+            try:
+                with socket.create_connection((host, port), timeout=2):
+                    ms = (time.perf_counter() - t0) * 1000
+                    best = ms if best is None else min(best, ms)
+                    if ms < 150:
+                        break            # fast answer - no need to try the others
+            except OSError:
+                continue
+        return best
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            ms = self.probe()
+            now = time.time()
+            self.checks += 1
+            if ms is None:
+                self.failed += 1
+                self.fails_in_row += 1
+                self.ok, self.latency_ms = False, None
+                if self.fails_in_row == 2 and self.down_since is None:
+                    self.down_since = now - NET_EVERY_S
+                    last = self.state.get("last_reading") or {}
+                    self.down_snapshot = last
+                    sinr = last.get("sinr_db")
+                    print(f"{RED}{BOLD}{datetime.now():%H:%M:%S}  INTERNET DOWN{RESET}{RED}  "
+                          f"(signal at that moment: SINR {sinr if sinr is not None else '--'} dB, "
+                          f"router: {self.state.get('router_status', '?')}){RESET}")
+            else:
+                self.ok, self.latency_ms = True, round(ms)
+                self.latencies.append(ms)
+                if ms > SLOW_MS:
+                    self.slow += 1
+                self.fails_in_row = 0
+                if self.down_since is not None:
+                    self.end_outage(now)
+            self.stop_flag.wait(NET_EVERY_S)
+
+    def end_outage(self, now):
+        secs = now - self.down_since
+        snap = self.down_snapshot
+        print(f"{GREEN}{BOLD}{datetime.now():%H:%M:%S}  INTERNET BACK{RESET}{GREEN} after {fmt_duration(secs)}{RESET}")
+        self.outages.append((self.down_since, now, secs, snap.get("sinr_db")))
+        self.writer.writerow({
+            "start": datetime.fromtimestamp(self.down_since).isoformat(timespec="seconds"),
+            "end": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+            "duration_s": round(secs),
+            "sinr_db_at_start": snap.get("sinr_db"),
+            "rsrp_dbm_at_start": snap.get("rsrp_dbm"),
+            "tower_id": snap.get("tower_id"),
+            "pci": snap.get("pci"),
+            "router_status": self.state.get("router_status_at_down", ""),
+        })
+        self.file.flush()
+        self.down_since = None
+
+    def stop(self):
+        self.stop_flag.set()
+        if self.down_since is not None:      # still down when stopped - record it
+            self.end_outage(time.time())
+
+    def tag(self):
+        if self.ok is None:
+            return f"{DIM}net …{RESET}"
+        if not self.ok:
+            return f"{RED}{BOLD}NET DOWN{RESET}"
+        colour = YELLOW if self.latency_ms > SLOW_MS else DIM
+        return f"{colour}net {self.latency_ms} ms{RESET}"
+
+
 # ---------- output ----------
-def print_reading(r, cells, towers_seen):
+def print_reading(r, cells, towers_seen, net_tag=""):
     t = datetime.now().strftime("%H:%M:%S")
     s = r["sinr_db"]
     line = (
@@ -134,7 +241,7 @@ def print_reading(r, cells, towers_seen):
         f"{sinr_colour(s)}({sinr_word(s)}){RESET}  "
         f"RSRP {r['rsrp_dbm'] if r['rsrp_dbm'] is not None else '--':>5} dBm  "
         f"{r['network']} {r['band']}  PCI {r['pci'] or '--':>4}  tower {r['tower_id'] or '--'}  "
-        f"rank {r['rank'] or '-'}  {r['dl_modulation'] or ''}"
+        f"rank {r['rank'] or '-'}  {r['dl_modulation'] or ''}  {net_tag}"
     )
     tower = r["tower_id"]
     if tower and towers_seen and tower != towers_seen[-1]:
@@ -147,10 +254,29 @@ def print_reading(r, cells, towers_seen):
         print(f"{DIM}          also heard (PCI:SINR)  {others}{RESET}")
 
 
-def print_summary(rows):
+def print_summary(rows, net=None):
     vals = [r["sinr_db"] for r in rows if r["sinr_db"] is not None]
+    if net and net.checks:
+        up = 100 * (net.checks - net.failed) / net.checks
+        print(f"\n{BOLD}Internet{RESET} - {net.checks} checks, working {up:.1f}% of the time")
+        if net.latencies:
+            avg = sum(net.latencies) / len(net.latencies)
+            print(f"  response time  average {avg:.0f} ms, slow (>{SLOW_MS} ms) {net.slow} times")
+        if net.outages:
+            total = sum(o[2] for o in net.outages)
+            longest = max(o[2] for o in net.outages)
+            good = [o for o in net.outages if o[3] is not None and o[3] >= 10]
+            print(f"  {RED}{len(net.outages)} outage(s){RESET}, {fmt_duration(total)} down in total, longest {fmt_duration(longest)}")
+            for start, end, secs, sinr in net.outages[-10:]:
+                print(f"    {datetime.fromtimestamp(start):%d %b %H:%M:%S} -> {datetime.fromtimestamp(end):%H:%M:%S}"
+                      f"  ({fmt_duration(secs)}, SINR {sinr if sinr is not None else '--'} dB)")
+            if good:
+                print(f"  {YELLOW}{len(good)} of these happened with GOOD signal (SINR 10+ dB) - that points to a problem")
+                print(f"  on Rain's network, not your router's position. Send outages.csv to Rain support.{RESET}")
+        else:
+            print(f"  {GREEN}no outages{RESET}")
     if not vals:
-        print("\nNo readings recorded.")
+        print("\nNo signal readings recorded.")
         return
     towers = {}
     for r in rows:
@@ -316,14 +442,30 @@ def main():
     password = os.environ.get("ROUTER_PASSWORD") or getpass.getpass("Router password (hidden as you type): ")
 
     csv_path = Path(args.csv)
+    if csv_path.exists():
+        # An older version wrote different columns - keep that file and start a fresh one
+        with open(csv_path, encoding="utf-8") as f:
+            header = f.readline().strip().split(",")
+        if header != CSV_FIELDS:
+            old = csv_path.with_name(f"{csv_path.stem}_before_{datetime.now():%Y%m%d_%H%M}.csv")
+            csv_path.rename(old)
+            print(f"{DIM}Older log kept as {old.name}{RESET}")
     new_file = not csv_path.exists()
     csv_file = open(csv_path, "a", newline="", encoding="utf-8")
     writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDS)
     if new_file:
         writer.writeheader()
 
+    outage_path = csv_path.with_name("outages.csv")
+    new_outage = not outage_path.exists()
+    outage_file = open(outage_path, "a", newline="", encoding="utf-8")
+    outage_writer = csv.DictWriter(outage_file, fieldnames=OUTAGE_FIELDS)
+    if new_outage:
+        outage_writer.writeheader()
+
     state = {"cells": None, "rows": [], "towers": [], "last": time.time(), "last_info": 0, "flags": [],
-             "user": args.user, "password": password}
+             "user": args.user, "password": password, "last_reading": None, "router_status": "?"}
+    net = InternetChecker(state, outage_writer, outage_file)
 
     def on_response(resp):
         url = resp.url
@@ -342,16 +484,33 @@ def main():
             state["cells"] = parse_cells(body) or state["cells"]
             return
         r = parse_device_info(body)
-        if not r or r["sinr_db"] is None and r["rsrp_dbm"] is None:
+        if r is None:
+            return
+        state["last"] = time.time()          # the router page is still answering
+        if r["sinr_db"] is None and r["rsrp_dbm"] is None:
+            # The router answered, but has no 5G/4G connection right now
+            if state["router_status"] != "NO NETWORK":
+                print(f"{RED}{BOLD}{datetime.now():%H:%M:%S}  ROUTER: NO NETWORK{RESET}{RED} (not connected to any tower){RESET}")
+            state["router_status"] = "NO NETWORK"
+            if net.down_since is not None:
+                state["router_status_at_down"] = "NO NETWORK"
             if args.debug:
                 print(f"{DIM}  device info without signal values: {str(body)[:200]}{RESET}")
             return
+        if state["router_status"] == "NO NETWORK":
+            print(f"{GREEN}{datetime.now():%H:%M:%S}  ROUTER: connected again{RESET}")
+        state["router_status"] = "connected"
+        if net.down_since is None:
+            state["router_status_at_down"] = "connected"
         state["last_info"] = time.time()
         cells = state["cells"]
         r["tac"] = cells["tac"] if cells else None
         r["timing_advance"] = cells["timing_advance"] if cells else None
         r["neighbours"] = json.dumps(cells["neighbours"]) if cells else ""
-        print_reading(r, cells, state["towers"])
+        r["internet_ok"] = net.ok
+        r["latency_ms"] = net.latency_ms
+        state["last_reading"] = r
+        print_reading(r, cells, state["towers"], net.tag())
         if r["tower_id"] and (not state["towers"] or state["towers"][-1] != r["tower_id"]):
             state["towers"].append(r["tower_id"])
         writer.writerow({"time": datetime.now().isoformat(timespec="seconds"), **{k: r.get(k) for k in CSV_FIELDS if k != "time"}})
@@ -360,6 +519,7 @@ def main():
         state["last"] = time.time()
 
     print(f"Connecting to {args.url} ...")
+    net.start()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.show)
         context = browser.new_context(ignore_https_errors=True)  # the router uses a self-signed certificate
@@ -370,6 +530,7 @@ def main():
         if result not in ("ok", "already"):
             print(f"{RED}Login failed - {result}.{RESET}")
             browser.close()
+            net.stop()
             return 1
         print(f"{GREEN}Logged in.{RESET} Opening device info ...")
         if not open_device_info(page, args.url, state):
@@ -377,7 +538,8 @@ def main():
             print("  Send the screenshot and these lines to Claude. Still listening - press Ctrl + C to stop.")
         else:
             print(f"Reading signal every few seconds - press Ctrl + C to stop.")
-        print(f"Saving to {csv_path.resolve()}\n")
+        print(f"Saving to {csv_path.resolve()}")
+        print(f"Outages go to {outage_path.resolve()}\n")
         state["last"] = time.time()
 
         try:
@@ -395,8 +557,10 @@ def main():
         except KeyboardInterrupt:
             pass
         finally:
-            print_summary(state["rows"])
+            net.stop()
+            print_summary(state["rows"], net)
             csv_file.close()
+            outage_file.close()
             try:
                 browser.close()
             except Exception:

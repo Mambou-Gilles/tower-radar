@@ -33,6 +33,20 @@ you get a summary, and every reading is in `signal_log.csv` (opens in Excel).
 
 The laptop must be on the router's WiFi.
 
+## Internet outages
+
+Every 5 seconds the monitor also checks that the **internet** works (by reaching Cloudflare,
+Google and Quad9). Good signal does not guarantee internet — the tower's own link to Rain can fail.
+
+- `INTERNET DOWN` / `INTERNET BACK after 2m 10s` — printed live, saved to `outages.csv`
+  with the SINR at that moment.
+- `ROUTER: NO NETWORK` — the router itself lost its connection to the tower.
+- The summary says how many outages happened **with good signal** — that points to Rain's
+  network, not your router's position. Send `outages.csv` to Rain support.
+
+For a fair test, keep the laptop close to the router (or use a network cable), so weak WiFi
+inside the house isn't mistaken for an outage.
+
 ## Options
 
 | Option | What it does |
